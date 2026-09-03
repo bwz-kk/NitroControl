@@ -172,27 +172,42 @@ const INTERFACE: &str = "org.freedesktop.UPower.PowerProfiles";
 impl ZbusPowerProfilesBackend {
     /// Connects to the system bus and probes for whichever bus name this
     /// system's `power-profiles-daemon` actually registers, preferring the
-    /// current name over the legacy one. `Unavailable` if neither answers
-    /// (service not installed/running).
+    /// current name over the legacy one.
+    ///
+    /// If neither candidate answers, the real cause is preserved rather than
+    /// collapsed to a blanket `Unavailable`: a candidate whose name simply
+    /// has no owner (confirmed live: `zbus`'s error `Display` for that case
+    /// contains `"ServiceUnknown"`) genuinely means "not installed/running",
+    /// but `Denied`/`Other` mean something is actually wrong (bad D-Bus
+    /// policy, protocol error, etc.) and must not be reported as if the
+    /// service were merely absent.
     pub fn connect() -> Result<Self, BackendError> {
         let connection =
             zbus::blocking::Connection::system().map_err(|e| BackendError::Other(e.to_string()))?;
 
+        let mut most_specific_error: Option<BackendError> = None;
         for candidate in [PRIMARY_BUS_NAME, LEGACY_BUS_NAME] {
-            if Self::probe(&connection, candidate) {
-                return Ok(Self {
-                    connection,
-                    bus_name: candidate.to_string(),
-                });
+            match Self::probe(&connection, candidate) {
+                Ok(()) => {
+                    return Ok(Self {
+                        connection,
+                        bus_name: candidate.to_string(),
+                    })
+                }
+                Err(BackendError::Unavailable) => {} // keep trying the next candidate
+                Err(other) if most_specific_error.is_none() => most_specific_error = Some(other),
+                Err(_) => {}
             }
         }
-        Err(BackendError::Unavailable)
+        Err(most_specific_error.unwrap_or(BackendError::Unavailable))
     }
 
-    fn probe(connection: &zbus::blocking::Connection, bus_name: &str) -> bool {
+    fn probe(connection: &zbus::blocking::Connection, bus_name: &str) -> Result<(), BackendError> {
         Self::proxy_for(connection, bus_name)
-            .and_then(|p| p.get_property::<String>("Version"))
-            .is_ok()
+            .map_err(map_zbus_error)?
+            .get_property::<String>("Version")
+            .map_err(map_zbus_error)?;
+        Ok(())
     }
 
     fn proxy_for(
