@@ -10,12 +10,13 @@ Sequence: DISCOVER → SPECIFY → REVIEW → IMPLEMENT → VERIFY → DOCUMENT,
 
 Folded in findings from two web-research passes (Acer-specific ecosystem: `linuwu_sense`, DAMX, `acer-wmi-battery`, `predator-sense`, etc.; Rust architecture: `asusctl`, `system76-power`, `power-profiles-daemon`'s real D-Bus contract, `LenovoLegionLinux`, `fw-fanctrl`) plus a user-supplied lead (a KDE Plasma "Nitro Control" widget referencing `acer_nitro_ec` hwmon and `acer-wmi-battery`'s `health_mode`). Key outcomes: identified the mainline `WMID_GUID4`/`predator_v4` gaming-interface path as the most promising in-tree lead for fan/thermal-profile control (present-but-inactive on this machine); corrected the OS-level power-profile capability to `HardwareDependent` (PPD's placeholder-backend behavior); added `nitroctl-dbus` to the architecture; added SAFE-005 (fail-safe-to-firmware-default); confirmed the decision to stay independent of all surveyed third-party projects for v1. No application code, no packages installed, no system config changed.
 
-## M1 — Core read-only providers (`nitroctl-core`)
+## M1 — Core read-only providers (`nitroctl-core`) — done 2026-09-03
 
-- Implement `SensorProvider` for `GenericLinux` and `AcerNitroV15` (CPU/GPU temp, CPU freq, CPU util, RAM, battery — per Capability Matrix `SUPPORTED` rows only).
-- `fan_rpm()` returns `Unsupported` unconditionally for `AcerNitroV15` on this hardware — no placeholder value.
-- Unit tests via the `SysfsReader` seam (`architecture.md`): valid values, malformed values, missing files, permission-denied, boundary values (e.g. negative or absurd temps rejected/flagged, not trusted blindly).
-- Verification: cross-check each `SUPPORTED` reading against `sensors`/`nvidia-smi`/`upower` output on the real machine; record the comparison.
+- Implemented `SensorProvider` for `GenericLinux` and `AcerNitroV15` (CPU/iGPU/dGPU temp, CPU/dGPU util, CPU freq, RAM, battery, fan RPM), built TDD (red-green per method, 56 tests).
+- `fan_rpm()` returns `Unsupported` for both providers on this hardware — no placeholder value; `AcerNitroV15` delegates to `GenericLinux` for every v1 capability (no Acer-specific interface exists yet per `hardware.md`), Acer-specific divergence deferred to M5+.
+- Unit tests via the `SysfsReader`/`CommandRunner` seams (`architecture.md`): valid values, malformed values, missing files, permission-denied, and boundary values (implausible temperature readings, internally-inconsistent RAM fields — both map to `Unknown`, never trusted blindly).
+- Verification: `examples/verify_m1.rs` ran every reading against real hardware and was cross-checked by hand against `sensors`, `nvidia-smi`, `free`, and `upower` — dGPU temp/util matched `nvidia-smi` exactly, RAM total matched `free` exactly, battery matched `upower`, CPU/iGPU temps within normal sensor-to-sensor drift.
+- `cargo test`/`clippy`/`fmt` all clean.
 
 ## M2 — CLI (`nitroctl-cli`)
 
