@@ -5,9 +5,7 @@ use nitroctl_cli::commands::{
 };
 use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
-use nitroctl_core::power_profile::{
-    PowerProfilesDaemon, UnavailableBackend, ZbusPowerProfilesBackend,
-};
+use nitroctl_core::power_profile::{FailedBackend, PowerProfilesDaemon, ZbusPowerProfilesBackend};
 use nitroctl_core::sysfs::RealSysfsReader;
 
 #[derive(Parser)]
@@ -58,14 +56,16 @@ fn main() {
         Command::Fans => run_fans(sensor_provider().as_ref()),
         Command::Diagnose => run_diagnose(sensor_provider().as_ref()),
         Command::Profile(profile_command) => {
-            // Connecting never hard-fails the CLI: if power-profiles-daemon
-            // isn't reachable, UnavailableBackend reports Unsupported for
-            // reads and BackendUnavailable for set, per the existing
-            // capability model — no special-case here.
+            // Connecting never hard-fails the CLI: on failure, FailedBackend
+            // carries the *actual* connect() error through to the usual
+            // capability-state mapping (Unavailable -> Unsupported, Denied ->
+            // RequiresPrivilege, Other -> Unknown) instead of collapsing
+            // every failure into "unavailable" — a real AccessDenied must
+            // not be misreported as "service not installed".
             let profile_provider: Box<dyn nitroctl_core::power_profile::PowerProfileProvider> =
                 match ZbusPowerProfilesBackend::connect() {
                     Ok(backend) => Box::new(PowerProfilesDaemon::new(backend)),
-                    Err(_) => Box::new(PowerProfilesDaemon::new(UnavailableBackend)),
+                    Err(e) => Box::new(PowerProfilesDaemon::new(FailedBackend(e))),
                 };
             match profile_command {
                 ProfileCommand::List => run_profile_list(profile_provider.as_ref()),

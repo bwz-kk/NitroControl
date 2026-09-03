@@ -287,22 +287,25 @@ impl PowerProfilesBackend for ZbusPowerProfilesBackend {
 }
 
 /// Fallback backend for when connecting to `power-profiles-daemon` itself
-/// failed (service not installed/running). Every call reports `Unavailable`,
-/// so `main.rs` never has to special-case "no provider at all" separately
-/// from "provider says Unsupported" — it always has a `PowerProfileProvider`
-/// to call, per the same "never invent a value" principle as the rest of
-/// the capability model.
-pub struct UnavailableBackend;
+/// failed. Every call reports the *same* error `connect()` actually
+/// returned — never hardcoded to `Unavailable` — so a real `Denied`/`Other`
+/// connection failure still reaches `CapabilityState::RequiresPrivilege`/
+/// `Unknown` (and `ProfileError::BackendDenied`/`BackendFailed` for
+/// `set_profile`) instead of being misreported as "service not installed".
+/// This means `main.rs` never has to special-case "no provider at all"
+/// separately from "provider reported an error" — it always has a working
+/// `PowerProfileProvider` to call.
+pub struct FailedBackend(pub BackendError);
 
-impl PowerProfilesBackend for UnavailableBackend {
+impl PowerProfilesBackend for FailedBackend {
     fn profiles(&self) -> Result<Vec<ProfileInfo>, BackendError> {
-        Err(BackendError::Unavailable)
+        Err(self.0.clone())
     }
     fn active_profile_name(&self) -> Result<String, BackendError> {
-        Err(BackendError::Unavailable)
+        Err(self.0.clone())
     }
     fn set_active_profile(&self, _name: &str) -> Result<(), BackendError> {
-        Err(BackendError::Unavailable)
+        Err(self.0.clone())
     }
 }
 
@@ -420,14 +423,46 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_backend_reports_unsupported_end_to_end() {
-        let provider = PowerProfilesDaemon::new(UnavailableBackend);
+    fn failed_backend_reports_unavailable_end_to_end() {
+        let provider = PowerProfilesDaemon::new(FailedBackend(BackendError::Unavailable));
 
         assert_eq!(provider.list_profiles(), CapabilityState::Unsupported);
         assert_eq!(provider.current_profile(), CapabilityState::Unsupported);
         assert_eq!(
             provider.set_profile("balanced"),
             Err(ProfileError::BackendUnavailable)
+        );
+    }
+
+    #[test]
+    fn failed_backend_preserves_denied_rather_than_reporting_unavailable() {
+        // Regression test for the Copilot-flagged bug: a real connect()
+        // failure (e.g. AccessDenied) must not be misreported as "service
+        // not installed".
+        let provider = PowerProfilesDaemon::new(FailedBackend(BackendError::Denied));
+
+        assert_eq!(provider.list_profiles(), CapabilityState::RequiresPrivilege);
+        assert_eq!(
+            provider.current_profile(),
+            CapabilityState::RequiresPrivilege
+        );
+        assert_eq!(
+            provider.set_profile("balanced"),
+            Err(ProfileError::BackendDenied)
+        );
+    }
+
+    #[test]
+    fn failed_backend_preserves_other_rather_than_reporting_unavailable() {
+        let provider = PowerProfilesDaemon::new(FailedBackend(BackendError::Other(
+            "connection reset".to_string(),
+        )));
+
+        assert_eq!(provider.list_profiles(), CapabilityState::Unknown);
+        assert_eq!(provider.current_profile(), CapabilityState::Unknown);
+        assert_eq!(
+            provider.set_profile("balanced"),
+            Err(ProfileError::BackendFailed("connection reset".to_string()))
         );
     }
 
