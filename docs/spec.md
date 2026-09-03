@@ -18,7 +18,7 @@ NitroControl is a Linux-native monitoring and control utility for Acer Nitro lap
 - **FR-002**: `nitroctl status` gives a one-screen summary combining FR-001's metrics with battery state and current OS power profile.
 - **FR-003**: `nitroctl battery` reports charge percentage, charging/discharging/full status, and power draw (W = V×I) when derivable from `BAT1`. Unavailable fields render as `unavailable`, never a fabricated `0`.
 - **FR-004**: `nitroctl fans` reports `unavailable` explicitly — evidence shows no fan `hwmon` interface exists on this machine — rather than omitting the command or returning a fake value.
-- **FR-005**: `nitroctl profile list|get|set` operates against `power-profiles-daemon` over D-Bus (`performance`/`balanced`/`power-saver`). `set` relies on the caller's existing polkit authorization; NitroControl introduces no new privilege escalation path.
+- **FR-005**: `nitroctl profile list|get|set` operates against `power-profiles-daemon` over D-Bus — bus/interface `org.freedesktop.UPower.PowerProfiles` at `/org/freedesktop/UPower/PowerProfiles`, falling back to the legacy `net.hadess.PowerProfiles` name/path if the former isn't registered (`performance`/`balanced`/`power-saver`). `set` relies on the caller's existing polkit authorization; NitroControl introduces no new privilege escalation path. A profile backed by PPD's "placeholder" driver (see `hardware.md`) is reported as `HardwareDependent`, not `Supported`.
 - **FR-006**: `nitroctl diagnose` emits the capability matrix plus the raw evidence (paths/values) NitroControl used to derive it, suitable for pasting into a GitHub issue, with battery serial number and identifying DMI fields redacted.
 
 Acceptance: each FR is testable via an automated CLI test (mocked provider) plus one real-hardware run recorded in `hardware.md`.
@@ -36,11 +36,12 @@ Acceptance: each FR is testable via an automated CLI test (mocked provider) plus
 - **SAFE-002**: No command exposes arbitrary raw reads/writes to a hardware path (no `nitroctl raw-write <path> <value>`).
 - **SAFE-003**: All control-feature inputs are validated against a known-valid range/enum before any write is attempted; invalid input is rejected with a clear error, never clamped silently.
 - **SAFE-004**: A failed control write leaves hardware state unchanged from NitroControl's perspective — no partial-write recovery logic that could leave state ambiguous; NitroControl reports the failure and re-reads actual state rather than assuming success.
+- **SAFE-005**: On daemon stop or crash, any control feature that was actively holding hardware state releases back to firmware/EC default behavior — the daemon never leaves hardware frozen at its last-commanded value (pattern confirmed from the `fw-fanctrl` project's design for Framework laptops).
 
 ## 6. Compatibility Requirements
 
 - **COMPAT-001**: Hardware-provider selection is keyed off `/sys/class/dmi/id/product_name`, read once at startup. `AcerNitroV15` is the only concrete Acer profile in v1; `GenericLinux` (generic hwmon/thermal/power_supply/NVML only) is the fallback for any unrecognized machine.
-- **COMPAT-002**: A capability is only ever marked `SUPPORTED` in code after being verified on real hardware and recorded in `hardware.md`; otherwise it is `UNSUPPORTED`, `UNKNOWN`, `REQUIRES_PRIVILEGE`, or `HARDWARE_DEPENDENT`.
+- **COMPAT-002**: A capability is only ever marked `SUPPORTED` in code after being verified on real hardware and recorded in `hardware.md`; otherwise it is `UNSUPPORTED`, `UNKNOWN`, `REQUIRES_PRIVILEGE`, or `HARDWARE_DEPENDENT`. A third-party project's own compatibility claim is never sufficient evidence on its own — confirmed necessary by a concrete case in `hardware.md` (a community tool lists ANV15-41 as fully supported while this machine's own runtime state contradicts it).
 
 ## 7. Acceptance Criteria
 
