@@ -40,7 +40,7 @@ fn describe<T>(state: &CapabilityState<T>, fmt: impl FnOnce(&T) -> String) -> (S
         CapabilityState::Unsupported => ("unavailable".to_string(), 1),
         CapabilityState::Unknown => ("unknown".to_string(), 1),
         CapabilityState::RequiresPrivilege => ("requires elevated privilege".to_string(), 1),
-        CapabilityState::HardwareDependent => ("hardware-dependent".to_string(), 1),
+        CapabilityState::HardwareDependent(v) => (format!("{} (hardware-dependent)", fmt(v)), 1),
     }
 }
 
@@ -52,7 +52,7 @@ fn state_label<T>(state: &CapabilityState<T>) -> &'static str {
         CapabilityState::Unsupported => "UNSUPPORTED",
         CapabilityState::Unknown => "UNKNOWN",
         CapabilityState::RequiresPrivilege => "REQUIRES_PRIVILEGE",
-        CapabilityState::HardwareDependent => "HARDWARE_DEPENDENT",
+        CapabilityState::HardwareDependent(_) => "HARDWARE_DEPENDENT",
     }
 }
 
@@ -183,7 +183,10 @@ pub fn run_diagnose(provider: &dyn SensorProvider) -> CommandOutput {
     let mut lines = vec!["NitroControl diagnostic report".to_string()];
 
     let mut labeled = |label: &str, value: String, state_word: &str| {
-        if state_word == "SUPPORTED" {
+        // SUPPORTED and HARDWARE_DEPENDENT both carry a real value; the
+        // other three states don't, so there's nothing to show alongside
+        // the state word for them.
+        if state_word == "SUPPORTED" || state_word == "HARDWARE_DEPENDENT" {
             lines.push(format!("{label}: {state_word} ({value})"));
         } else {
             lines.push(format!("{label}: {state_word}"));
@@ -386,15 +389,23 @@ mod tests {
     }
 
     #[test]
-    fn battery_hardware_dependent_prints_that_word_and_exits_1() {
+    fn battery_hardware_dependent_prints_the_value_with_a_caveat_and_exits_1() {
+        // HardwareDependent still carries a real value (e.g. a placeholder
+        // power-profile backend still names a real active profile) — losing
+        // it would be a regression, so the CLI must show both the value and
+        // the caveat, not just the bare word.
         let provider = FakeProvider {
-            battery: CapabilityState::HardwareDependent,
+            battery: CapabilityState::HardwareDependent(BatteryState {
+                percent: 55.0,
+                status: BatteryStatus::Discharging,
+                power_watts: None,
+            }),
             ..Default::default()
         };
 
         let out = run_battery(&provider);
 
-        assert_eq!(out.text, "Battery: hardware-dependent");
+        assert_eq!(out.text, "Battery: 55% (Discharging) (hardware-dependent)");
         assert_eq!(out.exit_code, 1);
     }
 
@@ -537,5 +548,30 @@ mod tests {
         );
         assert!(out.text.contains("Fan RPM: UNSUPPORTED"), "{}", out.text);
         assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn diagnose_shows_the_value_for_hardware_dependent_metrics_too() {
+        // Not just the state word — HardwareDependent carries a real value
+        // (e.g. a placeholder power-profile backend's active profile name),
+        // so diagnose must not discard it the way it discards Unsupported's
+        // (nonexistent) value.
+        let provider = FakeProvider {
+            battery: CapabilityState::HardwareDependent(BatteryState {
+                percent: 55.0,
+                status: BatteryStatus::Discharging,
+                power_watts: None,
+            }),
+            ..Default::default()
+        };
+
+        let out = run_diagnose(&provider);
+
+        assert!(
+            out.text
+                .contains("Battery: HARDWARE_DEPENDENT (55% (Discharging) (hardware-dependent))"),
+            "{}",
+            out.text
+        );
     }
 }

@@ -16,7 +16,9 @@ pub enum CapabilityState<T> {
     Unknown,
     /// Reading or writing this capability requires privileges the caller doesn't have.
     RequiresPrivilege,
-    /// The underlying interface exists and answers, but doesn't necessarily
-    /// reflect real hardware behavior (e.g. a power-profile "placeholder" backend).
-    HardwareDependent,
+    /// The underlying interface exists and answers with this value, but the
+    /// answer doesn't necessarily reflect real hardware behavior (e.g. a
+    /// power-profile "placeholder" backend still names a real active
+    /// profile — it just may not change anything on this hardware).
+    HardwareDependent(T),
 }

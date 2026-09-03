@@ -35,7 +35,7 @@ enum CapabilityState<T> {
     Unsupported,
     Unknown,
     RequiresPrivilege,
-    HardwareDependent,
+    HardwareDependent(T),
 }
 
 trait SensorProvider {
@@ -58,7 +58,7 @@ trait PowerProfileProvider {
 
 `GpuKind` is `Integrated` or `Discrete` — both AMD iGPU and NVIDIA dGPU are modeled explicitly rather than assuming a single GPU, per the discovery findings in `hardware.md`.
 
-`CapabilityState` is never coerced to a bare value in application code — `Unsupported`/`Unknown`/`HardwareDependent` render as explicit text ("unavailable", "unknown") in both CLI and GUI, never as `0` or an empty field, per FR-004/SAFE requirements in `spec.md`. A `power-profiles-daemon` profile backed by its "placeholder" driver (D-Bus API present, no real backend underneath — see `hardware.md`) maps to `HardwareDependent`, never `Supported`, so the UI doesn't claim real hardware control that isn't happening.
+`CapabilityState` is never coerced to a bare value in application code — `Unsupported`/`Unknown` render as explicit text ("unavailable", "unknown") in both CLI and GUI, never as `0` or an empty field, per FR-004/SAFE requirements in `spec.md`. `HardwareDependent(T)` carries a real value (unlike `Unsupported`/`Unknown`, which don't) — it means "the interface answered with this value, but the answer may not reflect real hardware behavior," not "no value." A `power-profiles-daemon` profile backed by its "placeholder" driver (D-Bus API present, no real backend underneath — see `hardware.md`) maps to `HardwareDependent(profile_name)`, never bare `Supported`, so the UI still shows which profile is nominally active while flagging that switching it may be a no-op — never silently claiming full, trustworthy hardware control.
 
 ## Provider selection (compatibility)
 
