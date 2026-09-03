@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use nitroctl_core::capability::CapabilityState;
+use nitroctl_core::power_profile::{PowerProfileProvider, ProfileError, ProfileStatus};
 use nitroctl_core::sensor::{GpuKind, MemoryUsage, Percent, Rpm, SensorProvider};
 
 /// Per NFR-002, a bounded (not indefinite) pause: `cpu_utilization`'s rate
@@ -256,6 +257,56 @@ pub fn run_diagnose(provider: &dyn SensorProvider) -> CommandOutput {
     }
 }
 
+fn format_profile_status(status: &ProfileStatus) -> String {
+    status.name.clone()
+}
+
+pub fn run_profile_list(provider: &dyn PowerProfileProvider) -> CommandOutput {
+    let state = provider.list_profiles();
+    let (value, exit_code) = describe(&state, |names: &Vec<String>| names.join(", "));
+    CommandOutput {
+        text: format!("Profiles: {value}"),
+        exit_code,
+    }
+}
+
+pub fn run_profile_get(provider: &dyn PowerProfileProvider) -> CommandOutput {
+    let state = provider.current_profile();
+    let (value, exit_code) = describe(&state, format_profile_status);
+    CommandOutput {
+        text: format!("Power profile: {value}"),
+        exit_code,
+    }
+}
+
+pub fn run_profile_set(provider: &dyn PowerProfileProvider, name: &str) -> CommandOutput {
+    match provider.set_profile(name) {
+        Ok(()) => CommandOutput {
+            text: format!("Power profile set to {name}"),
+            exit_code: 0,
+        },
+        Err(ProfileError::InvalidProfile { requested, valid }) => CommandOutput {
+            text: format!(
+                "Invalid profile {requested:?}; valid choices: {}",
+                valid.join(", ")
+            ),
+            exit_code: 2,
+        },
+        Err(ProfileError::BackendUnavailable) => CommandOutput {
+            text: "power-profiles-daemon is not available".to_string(),
+            exit_code: 3,
+        },
+        Err(ProfileError::BackendDenied) => CommandOutput {
+            text: "power-profiles-daemon denied the request".to_string(),
+            exit_code: 3,
+        },
+        Err(ProfileError::BackendFailed(message)) => CommandOutput {
+            text: format!("power-profiles-daemon call failed: {message}"),
+            exit_code: 3,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +392,34 @@ mod tests {
         }
         fn fan_rpm(&self) -> CapabilityState<Vec<Rpm>> {
             self.fan_rpm.clone()
+        }
+    }
+
+    struct FakePowerProfileProvider {
+        list_profiles: CapabilityState<Vec<String>>,
+        current_profile: CapabilityState<ProfileStatus>,
+        set_result: Result<(), ProfileError>,
+    }
+
+    impl Default for FakePowerProfileProvider {
+        fn default() -> Self {
+            Self {
+                list_profiles: CapabilityState::Unsupported,
+                current_profile: CapabilityState::Unsupported,
+                set_result: Ok(()),
+            }
+        }
+    }
+
+    impl PowerProfileProvider for FakePowerProfileProvider {
+        fn list_profiles(&self) -> CapabilityState<Vec<String>> {
+            self.list_profiles.clone()
+        }
+        fn current_profile(&self) -> CapabilityState<ProfileStatus> {
+            self.current_profile.clone()
+        }
+        fn set_profile(&self, _profile: &str) -> Result<(), ProfileError> {
+            self.set_result.clone()
         }
     }
 
@@ -573,5 +652,142 @@ mod tests {
             "{}",
             out.text
         );
+    }
+
+    // ---- run_profile_list ----
+
+    #[test]
+    fn profile_list_prints_comma_separated_names() {
+        let provider = FakePowerProfileProvider {
+            list_profiles: CapabilityState::Supported(vec![
+                "power-saver".to_string(),
+                "balanced".to_string(),
+                "performance".to_string(),
+            ]),
+            ..Default::default()
+        };
+
+        let out = run_profile_list(&provider);
+
+        assert_eq!(out.text, "Profiles: power-saver, balanced, performance");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn profile_list_unsupported_when_ppd_unavailable() {
+        let provider = FakePowerProfileProvider::default();
+
+        let out = run_profile_list(&provider);
+
+        assert_eq!(out.text, "Profiles: unavailable");
+        assert_eq!(out.exit_code, 1);
+    }
+
+    // ---- run_profile_get ----
+
+    #[test]
+    fn profile_get_prints_the_active_profile_name() {
+        let provider = FakePowerProfileProvider {
+            current_profile: CapabilityState::Supported(ProfileStatus {
+                name: "performance".to_string(),
+                hardware_backed: true,
+            }),
+            ..Default::default()
+        };
+
+        let out = run_profile_get(&provider);
+
+        assert_eq!(out.text, "Power profile: performance");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn profile_get_flags_a_placeholder_backed_profile() {
+        let provider = FakePowerProfileProvider {
+            current_profile: CapabilityState::HardwareDependent(ProfileStatus {
+                name: "balanced".to_string(),
+                hardware_backed: false,
+            }),
+            ..Default::default()
+        };
+
+        let out = run_profile_get(&provider);
+
+        assert_eq!(out.text, "Power profile: balanced (hardware-dependent)");
+        assert_eq!(out.exit_code, 1);
+    }
+
+    // ---- run_profile_set ----
+
+    #[test]
+    fn profile_set_success_prints_confirmation_and_exits_0() {
+        let provider = FakePowerProfileProvider {
+            set_result: Ok(()),
+            ..Default::default()
+        };
+
+        let out = run_profile_set(&provider, "balanced");
+
+        assert_eq!(out.text, "Power profile set to balanced");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn profile_set_invalid_name_names_the_valid_choices_and_exits_2() {
+        // Per cli.md: "no silent clamping to a nearby valid value" and
+        // exit code 2 for an invalid argument.
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::InvalidProfile {
+                requested: "turbo-nitro-mode".to_string(),
+                valid: vec!["power-saver".to_string(), "balanced".to_string()],
+            }),
+            ..Default::default()
+        };
+
+        let out = run_profile_set(&provider, "turbo-nitro-mode");
+
+        assert!(out.text.contains("turbo-nitro-mode"), "{}", out.text);
+        assert!(out.text.contains("power-saver, balanced"), "{}", out.text);
+        assert_eq!(out.exit_code, 2);
+    }
+
+    #[test]
+    fn profile_set_backend_failure_exits_3_per_safe_004() {
+        // SAFE-004: a failed write is reported, never assumed to have
+        // succeeded — exit code 3 per cli.md's "underlying interface call
+        // failed" convention.
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::BackendFailed("dbus timeout".to_string())),
+            ..Default::default()
+        };
+
+        let out = run_profile_set(&provider, "balanced");
+
+        assert!(out.text.contains("dbus timeout"), "{}", out.text);
+        assert_eq!(out.exit_code, 3);
+    }
+
+    #[test]
+    fn profile_set_backend_unavailable_exits_3() {
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::BackendUnavailable),
+            ..Default::default()
+        };
+
+        let out = run_profile_set(&provider, "balanced");
+
+        assert_eq!(out.exit_code, 3);
+    }
+
+    #[test]
+    fn profile_set_backend_denied_exits_3() {
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::BackendDenied),
+            ..Default::default()
+        };
+
+        let out = run_profile_set(&provider, "balanced");
+
+        assert_eq!(out.exit_code, 3);
     }
 }

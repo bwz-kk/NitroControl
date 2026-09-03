@@ -6,6 +6,7 @@ description = "Hardware abstraction and capability model for NitroControl"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+zbus = "4"
 
 [dev-dependencies]
 tempfile = "3"
