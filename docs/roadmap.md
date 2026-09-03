@@ -24,6 +24,8 @@ Folded in findings from two web-research passes (Acer-specific ecosystem: `linuw
 - `commands.rs` holds pure, testable command logic; `main.rs` is thin clap-based glue with no logic of its own.
 - Real-hardware run of every command (`target/debug/nitroctl {status,sensors,battery,fans,diagnose}`) matched M1's cross-checked values; `fans` correctly printed the exact FR-004 text (`Fan RPM: unavailable`) and exited `1`.
 - Found and fixed during real-hardware verification (not caught by unit tests, since `FakeProvider` doesn't model statefulness): `cpu_utilization` always read "unknown" because each CLI invocation is a fresh process with no prior `/proc/stat` sample. Fixed with a bounded ~200ms two-sample pause (documented in `cli.md`), re-verified for real.
+- A `cavecrew-reviewer` pass over the whole crate found two more coverage gaps (`RequiresPrivilege`/`HardwareDependent` states, and the skip-sleep branch of the CPU-utilization sampling) — fixed with additional tests, 12/12 pass.
+- **`diagnose` does not yet fully satisfy FR-006**: it reports each metric's capability state and value, but not the underlying sysfs/NVML/subprocess evidence path FR-006 calls for, since `SensorProvider` doesn't carry that metadata today. Tracked as a known gap (see `cli.md`), not silently claimed as done — closing it needs a `SensorProvider` API extension (e.g. a parallel evidence-path accessor) plus the redaction logic FR-006 already specifies, both deferred to a future milestone rather than expanding M2's scope after the fact.
 - `cargo test`/`clippy`/`fmt` all clean.
 
 ## M3 — Power profile control

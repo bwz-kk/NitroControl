@@ -23,8 +23,9 @@ nitroctl diagnose                # capability matrix + evidence, for GitHub bug 
   Fan RPM: unavailable
   ```
   is correct; `Fan RPM: 0 RPM` is only ever printed if the hardware itself reported `0`.
+- `RequiresPrivilege` and `HardwareDependent` render as their own words (`requires elevated privilege`, `hardware-dependent`) and — like `Unsupported`/`Unknown` — are not fabricated values; a single-capability command exits `1` for any of the four non-`Supported` states alike, since none of them means "the command ran successfully with a real value."
 - `profile set <name>` rejects any value not in the provider's own `list_profiles()` output, with a non-zero exit code and a message naming the valid choices — no silent clamping to a nearby valid value.
-- `diagnose` output redacts battery serial number and any hostname/user-identifying DMI field before printing.
+- `diagnose` output redacts battery serial number and any hostname/user-identifying DMI field before printing. **Known gap (M2)**: `diagnose`'s v1 implementation reports each metric's `CapabilityState` and formatted value only — it does not yet include the underlying sysfs/NVML/subprocess evidence path per FR-006 ("raw evidence (paths/values)"), since `SensorProvider` doesn't currently carry that metadata alongside its typed return values. Nothing needs redaction yet as a result (no paths are printed), but the redaction logic FR-006 requires is not yet implemented either — it must land together with evidence-path support in a future milestone, not be assumed already covered.
 
 ## Exit codes
 

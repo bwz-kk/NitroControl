@@ -373,6 +373,32 @@ mod tests {
     }
 
     #[test]
+    fn battery_requires_privilege_prints_that_word_and_exits_1() {
+        let provider = FakeProvider {
+            battery: CapabilityState::RequiresPrivilege,
+            ..Default::default()
+        };
+
+        let out = run_battery(&provider);
+
+        assert_eq!(out.text, "Battery: requires elevated privilege");
+        assert_eq!(out.exit_code, 1);
+    }
+
+    #[test]
+    fn battery_hardware_dependent_prints_that_word_and_exits_1() {
+        let provider = FakeProvider {
+            battery: CapabilityState::HardwareDependent,
+            ..Default::default()
+        };
+
+        let out = run_battery(&provider);
+
+        assert_eq!(out.text, "Battery: hardware-dependent");
+        assert_eq!(out.exit_code, 1);
+    }
+
+    #[test]
     fn battery_with_no_power_draw_omits_the_watts_clause() {
         let provider = FakeProvider {
             battery: CapabilityState::Supported(BatteryState {
@@ -452,6 +478,23 @@ mod tests {
         let out = run_sensors(&provider);
 
         assert!(out.text.contains("CPU utilization: 42.0%"), "{}", out.text);
+    }
+
+    #[test]
+    fn sensors_skips_the_sleep_when_first_cpu_utilization_call_is_already_supported() {
+        let provider =
+            FakeProvider::with_cpu_utilization_sequence(vec![CapabilityState::Supported(Percent(
+                10.0,
+            ))]);
+
+        let start = std::time::Instant::now();
+        let out = run_sensors(&provider);
+
+        assert!(
+            start.elapsed() < CPU_UTILIZATION_SAMPLE_INTERVAL,
+            "should not sleep when the first sample is already Supported"
+        );
+        assert!(out.text.contains("CPU utilization: 10.0%"), "{}", out.text);
     }
 
     // ---- run_status ----
