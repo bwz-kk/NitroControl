@@ -29,9 +29,13 @@ nitroctl diagnose                # capability matrix + evidence, for GitHub bug 
 ## Exit codes
 
 - `0` — success.
-- `1` — requested capability is `Unsupported`/`Unknown` for this hardware (not a crash; documented behavior).
+- `1` — requested capability is `Unsupported`/`Unknown` for this hardware (not a crash; documented behavior). Applies to single-capability commands (`battery`, `fans`) whose entire output is that one capability. Multi-metric commands (`status`, `sensors`, `diagnose`) always exit `0`: a mix of available/unavailable metrics in one report is normal, documented output, not a command failure — each line still states its own status explicitly.
 - `2` — invalid argument (e.g. unknown profile name).
-- `3` — underlying interface call failed (e.g. D-Bus call to `power-profiles-daemon` errored) — the error message names the interface and the underlying error, per SAFE-004 (no silent fallback).
+- `3` — underlying interface call failed (e.g. D-Bus call to `power-profiles-daemon` errored) — the error message names the interface and the underlying error, per SAFE-004 (no silent fallback). Not yet reachable in M2 (no command performs a write); becomes relevant with `profile set` in M3.
+
+## CPU utilization sampling
+
+`cpu_utilization`'s rate calculation needs two `/proc/stat` reads (see architecture.md) — but each `nitroctl` invocation is a fresh process with no prior sample. `status`, `sensors`, and `diagnose` handle this by taking a throwaway first sample and, if it isn't `Supported`, sleeping ~200ms and sampling again. This is a short, bounded, documented pause (NFR-002) — not a hang — so real-world CPU utilization is usable from a one-shot CLI command instead of always reading "unknown".
 
 ## Testing
 

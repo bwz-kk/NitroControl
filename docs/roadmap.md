@@ -18,11 +18,13 @@ Folded in findings from two web-research passes (Acer-specific ecosystem: `linuw
 - Verification: `examples/verify_m1.rs` ran every reading against real hardware and was cross-checked by hand against `sensors`, `nvidia-smi`, `free`, and `upower` — dGPU temp/util matched `nvidia-smi` exactly, RAM total matched `free` exactly, battery matched `upower`, CPU/iGPU temps within normal sensor-to-sensor drift.
 - `cargo test`/`clippy`/`fmt` all clean.
 
-## M2 — CLI (`nitroctl-cli`)
+## M2 — CLI (`nitroctl-cli`) — done 2026-09-03
 
-- `status`, `sensors`, `battery`, `fans`, `diagnose` per `cli.md`.
-- CLI tests run against a mocked `nitroctl-core` provider, covering every exit code path in `cli.md`.
-- Verification: run each command for real, compare output to M1's cross-checked values.
+- Implemented `status`, `sensors`, `battery`, `fans`, `diagnose` per `cli.md`, built TDD against a hand-written `FakeProvider` (no filesystem mocking needed — the CLI only depends on `SensorProvider`), 9/9 tests pass.
+- `commands.rs` holds pure, testable command logic; `main.rs` is thin clap-based glue with no logic of its own.
+- Real-hardware run of every command (`target/debug/nitroctl {status,sensors,battery,fans,diagnose}`) matched M1's cross-checked values; `fans` correctly printed the exact FR-004 text (`Fan RPM: unavailable`) and exited `1`.
+- Found and fixed during real-hardware verification (not caught by unit tests, since `FakeProvider` doesn't model statefulness): `cpu_utilization` always read "unknown" because each CLI invocation is a fresh process with no prior `/proc/stat` sample. Fixed with a bounded ~200ms two-sample pause (documented in `cli.md`), re-verified for real.
+- `cargo test`/`clippy`/`fmt` all clean.
 
 ## M3 — Power profile control
 

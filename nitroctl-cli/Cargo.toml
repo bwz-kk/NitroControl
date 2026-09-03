@@ -1,0 +1,14 @@
+[package]
+name = "nitroctl-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI for NitroControl"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "nitroctl"
+path = "src/main.rs"
+
+[dependencies]
+nitroctl-core = { path = "../nitroctl-core" }
+clap = { version = "4", features = ["derive"] }
