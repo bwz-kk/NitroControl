@@ -511,12 +511,20 @@ mod tests {
 
     #[test]
     fn set_profile_calls_backend_with_a_valid_name() {
-        let backend = MockPowerProfilesBackend::new(three_profiles(), "performance");
-        let provider = PowerProfilesDaemon::new(backend);
+        // Copilot review (PR #1): this test previously only checked the
+        // return value, not that the backend was actually invoked with the
+        // requested name — MockPowerProfilesBackend already records that,
+        // so assert on it directly.
+        let backend = std::sync::Arc::new(MockPowerProfilesBackend::new(
+            three_profiles(),
+            "performance",
+        ));
+        let provider = PowerProfilesDaemon::new(backend.clone());
 
         let result = provider.set_profile("balanced");
 
         assert_eq!(result, Ok(()));
+        assert_eq!(backend.last_set_call(), Some("balanced".to_string()));
     }
 
     #[test]
