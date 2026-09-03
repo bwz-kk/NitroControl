@@ -1,0 +1,122 @@
+//! Testing seam for running external commands (currently: `nvidia-smi` for
+//! the discrete GPU, since NitroControl uses it as a subprocess fallback
+//! rather than linking NVML directly — see docs/architecture.md).
+
+use std::io;
+
+/// Runs a command and returns its captured stdout.
+pub trait CommandRunner: Send + Sync {
+    fn run(&self, program: &str, args: &[&str]) -> io::Result<String>;
+}
+
+/// Runs real subprocesses. Used in production.
+pub struct RealCommandRunner;
+
+impl CommandRunner for RealCommandRunner {
+    fn run(&self, program: &str, args: &[&str]) -> io::Result<String> {
+        let output = std::process::Command::new(program).args(args).output()?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+#[cfg(test)]
+pub mod mock {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    pub struct MockCommandRunner {
+        responses: Mutex<HashMap<String, io::Result<String>>>,
+    }
+
+    fn clone_result(result: &io::Result<String>) -> io::Result<String> {
+        match result {
+            Ok(s) => Ok(s.clone()),
+            Err(e) => Err(io::Error::from(e.kind())),
+        }
+    }
+
+    impl MockCommandRunner {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        fn key(program: &str, args: &[&str]) -> String {
+            format!("{program} {}", args.join(" "))
+        }
+
+        pub fn set_output(&self, program: &str, args: &[&str], stdout: impl Into<String>) {
+            self.responses
+                .lock()
+                .unwrap()
+                .insert(Self::key(program, args), Ok(stdout.into()));
+        }
+
+        pub fn set_not_found(&self, program: &str, args: &[&str]) {
+            self.responses.lock().unwrap().insert(
+                Self::key(program, args),
+                Err(io::Error::from(io::ErrorKind::NotFound)),
+            );
+        }
+    }
+
+    impl CommandRunner for MockCommandRunner {
+        fn run(&self, program: &str, args: &[&str]) -> io::Result<String> {
+            self.responses
+                .lock()
+                .unwrap()
+                .get(&Self::key(program, args))
+                .map(clone_result)
+                .unwrap_or_else(|| Err(io::Error::from(io::ErrorKind::NotFound)))
+        }
+    }
+
+    #[cfg(test)]
+    mod mock_tests {
+        use super::*;
+
+        #[test]
+        fn returns_configured_output() {
+            let mock = MockCommandRunner::new();
+            mock.set_output("nvidia-smi", &["--query"], "47, 12\n");
+            assert_eq!(mock.run("nvidia-smi", &["--query"]).unwrap(), "47, 12\n");
+        }
+
+        #[test]
+        fn unconfigured_command_is_not_found() {
+            let mock = MockCommandRunner::new();
+            let err = mock.run("nvidia-smi", &["--query"]).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        }
+
+        #[test]
+        fn explicit_not_found_overrides_default() {
+            let mock = MockCommandRunner::new();
+            mock.set_not_found("nvidia-smi", &["--query"]);
+            let err = mock.run("nvidia-smi", &["--query"]).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_runner_captures_stdout() {
+        let runner = RealCommandRunner;
+        let output = runner.run("echo", &["hello"]).unwrap();
+        assert_eq!(output.trim(), "hello");
+    }
+
+    #[test]
+    fn real_runner_reports_missing_binary() {
+        let runner = RealCommandRunner;
+        let err = runner
+            .run("nitroctl-definitely-not-a-real-binary", &[])
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+}
