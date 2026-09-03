@@ -35,7 +35,7 @@ Folded in findings from two web-research passes (Acer-specific ecosystem: `linuw
 - Exercise the `set` path end-to-end for the first time (flagged as untested in `hardware.md` risk #5) — verify by reading back `powerprofilesctl get`/D-Bus state after a `set` call.
 - Read the `Profiles` property's driver info to distinguish a real backend from PPD's placeholder driver, mapping the latter to `HardwareDependent` (`hardware.md`).
 - Validation: reject any profile name not returned by `list_profiles()`.
-- Resolve the polkit-vs-dbus-policy privilege-separation decision (`architecture.md`) before finalizing the daemon's IPC surface.
+- Privilege-separation decision (`architecture.md`) is resolved as moot for M3 — verified live that PPD's own D-Bus policy permits unprivileged `set` — so this bullet is done without adding any privilege layer of NitroControl's own.
 
 ## M4 — GUI (`nitroctl-gui`, GTK4 + libadwaita)
 

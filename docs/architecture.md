@@ -25,7 +25,7 @@ Hardware-specific logic never appears above the Hardware Abstraction layer. Neit
 - **`nitroctl-cli`** — `clap`-based binary, depends on `nitroctl-core` (directly, or via `nitroctl-dbus` once the daemon exists).
 - **`nitroctl-gui`** — GTK4/libadwaita binary (Milestone 4+), depends on the same shared layer.
 
-**Open decision for M3**: privilege-separation model for any write `nitroctl-dbus` exposes. Prior art splits two ways — `asusctl` relies on plain D-Bus system-bus policy files (coarse UID/group allow-list), `system76-power` uses polkit (per-action, granular). `RequiresPrivilege` in our `CapabilityState` enum implies per-action granularity, which argues for **polkit** — confirm this before building the daemon's IPC surface, since retrofitting later touches every method signature.
+**Resolved for M3** (was an open decision): M3's `profile set` needs no privilege-separation scheme of our own — verified live (`hardware.md`) that `power-profiles-daemon`'s own D-Bus policy is `context="default"` (any user, no polkit) for the whole interface including writes, matching `asusctl`'s model rather than `system76-power`'s. NitroControl is purely a client of PPD's already-permissive bus policy here. The polkit-vs-dbus-policy question is only still open for a **future NitroControl-owned privileged daemon** (M5+ fan/thermal control via `predator_v4`) — that daemon doesn't exist yet, so nothing to decide until then.
 
 ## Core abstraction
 
