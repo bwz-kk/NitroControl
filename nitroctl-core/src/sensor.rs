@@ -64,7 +64,13 @@ pub struct BatteryState {
 
 /// Read-only hardware telemetry. Implemented once per supported machine
 /// (`GenericLinux`, `AcerNitroV15`, ...) — see `crate::provider`.
-pub trait SensorProvider {
+/// `Send + Sync` so a long-lived provider can be shared (e.g. via `Arc`)
+/// with a background polling thread — required for `nitroctl-gui`, whose
+/// `cpu_utilization()` rate calculation only produces a real value across
+/// two calls on the *same* provider instance (see `GenericLinux`'s internal
+/// state), so the GUI must reuse one provider across polls rather than
+/// building a fresh one each tick.
+pub trait SensorProvider: Send + Sync {
     fn cpu_temperature(&self) -> CapabilityState<Celsius>;
     fn gpu_temperature(&self, gpu: GpuKind) -> CapabilityState<Celsius>;
     fn cpu_utilization(&self) -> CapabilityState<Percent>;

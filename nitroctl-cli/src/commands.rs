@@ -322,7 +322,7 @@ mod tests {
         /// A queue so tests can simulate the stateful two-call rate
         /// calculation `GenericLinux::cpu_utilization` actually has: pops
         /// one state per call, repeating the last once exhausted.
-        cpu_utilization: std::cell::RefCell<std::collections::VecDeque<CapabilityState<Percent>>>,
+        cpu_utilization: std::sync::Mutex<std::collections::VecDeque<CapabilityState<Percent>>>,
         gpu_utilization_integrated: CapabilityState<Percent>,
         gpu_utilization_discrete: CapabilityState<Percent>,
         cpu_frequency: CapabilityState<Megahertz>,
@@ -334,7 +334,7 @@ mod tests {
     impl FakeProvider {
         fn with_cpu_utilization_sequence(states: Vec<CapabilityState<Percent>>) -> Self {
             Self {
-                cpu_utilization: std::cell::RefCell::new(states.into()),
+                cpu_utilization: std::sync::Mutex::new(states.into()),
                 ..Default::default()
             }
         }
@@ -346,7 +346,7 @@ mod tests {
                 cpu_temperature: CapabilityState::Unsupported,
                 gpu_temperature_integrated: CapabilityState::Unsupported,
                 gpu_temperature_discrete: CapabilityState::Unsupported,
-                cpu_utilization: std::cell::RefCell::new(vec![CapabilityState::Unsupported].into()),
+                cpu_utilization: std::sync::Mutex::new(vec![CapabilityState::Unsupported].into()),
                 gpu_utilization_integrated: CapabilityState::Unsupported,
                 gpu_utilization_discrete: CapabilityState::Unsupported,
                 cpu_frequency: CapabilityState::Unsupported,
@@ -368,7 +368,7 @@ mod tests {
             }
         }
         fn cpu_utilization(&self) -> CapabilityState<Percent> {
-            let mut queue = self.cpu_utilization.borrow_mut();
+            let mut queue = self.cpu_utilization.lock().unwrap();
             if queue.len() > 1 {
                 queue.pop_front().unwrap()
             } else {

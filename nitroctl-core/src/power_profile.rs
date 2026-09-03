@@ -69,7 +69,10 @@ pub enum ProfileError {
     BackendFailed(String),
 }
 
-pub trait PowerProfileProvider {
+/// `Send + Sync` for the same reason as `SensorProvider` — a long-lived
+/// instance can be shared with a background polling thread instead of
+/// reconnecting to D-Bus every tick.
+pub trait PowerProfileProvider: Send + Sync {
     fn list_profiles(&self) -> CapabilityState<Vec<String>>;
     fn current_profile(&self) -> CapabilityState<ProfileStatus>;
     fn set_profile(&self, profile: &str) -> Result<(), ProfileError>;

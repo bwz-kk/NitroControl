@@ -3,7 +3,7 @@
 ## Layering
 
 ```
-CLI (clap)                 GUI (GTK4 + libadwaita, Milestone 4+)
+CLI (clap)                 GUI (GTK4 + libadwaita)
         \                         /
          nitroctl-dbus (shared capability/state proxy)
                         |
@@ -23,7 +23,7 @@ Hardware-specific logic never appears above the Hardware Abstraction layer. Neit
 - **`nitroctl-core`** — the abstraction, providers, and typed sensor/state model. No UI dependency.
 - **`nitroctl-dbus`** — shared proxy crate exposing `CapabilityState` over D-Bus to both frontends, so the CLI and GUI never re-derive support state independently. Pattern taken from `asusctl`'s `rog-dbus` crate (prior art, see below).
 - **`nitroctl-cli`** — `clap`-based binary, depends on `nitroctl-core` (directly, or via `nitroctl-dbus` once the daemon exists).
-- **`nitroctl-gui`** — GTK4/libadwaita binary (Milestone 4+), depends on the same shared layer.
+- **`nitroctl-gui`** — GTK4/libadwaita binary (M4, done), depends on the same shared layer.
 
 **Resolved for M3** (was an open decision): M3's `profile set` needs no privilege-separation scheme of our own — verified live (`hardware.md`) that `power-profiles-daemon`'s own D-Bus policy is `context="default"` (any user, no polkit) for the whole interface including writes, matching `asusctl`'s model rather than `system76-power`'s. NitroControl is purely a client of PPD's already-permissive bus policy here. The polkit-vs-dbus-policy question is only still open for a **future NitroControl-owned privileged daemon** (M5+ fan/thermal control via `predator_v4`) — that daemon doesn't exist yet, so nothing to decide until then.
 
@@ -38,7 +38,10 @@ enum CapabilityState<T> {
     HardwareDependent(T),
 }
 
-trait SensorProvider {
+// Send + Sync: a long-lived instance can be shared (Arc) with a background
+// polling thread — the GUI (M4) needs this, since e.g. cpu_utilization()'s
+// rate calculation only works across two calls on the *same* instance.
+trait SensorProvider: Send + Sync {
     fn cpu_temperature(&self) -> CapabilityState<Celsius>;
     fn gpu_temperature(&self, gpu: GpuKind) -> CapabilityState<Celsius>;
     fn cpu_utilization(&self) -> CapabilityState<Percent>;
@@ -49,7 +52,7 @@ trait SensorProvider {
     fn fan_rpm(&self) -> CapabilityState<Vec<Rpm>>;
 }
 
-trait PowerProfileProvider {
+trait PowerProfileProvider: Send + Sync {
     fn list_profiles(&self) -> CapabilityState<Vec<ProfileName>>;
     fn current_profile(&self) -> CapabilityState<ProfileName>;
     fn set_profile(&self, profile: ProfileName) -> Result<(), ProfileError>;
