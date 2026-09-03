@@ -14,8 +14,53 @@ pub struct RealCommandRunner;
 
 impl CommandRunner for RealCommandRunner {
     fn run(&self, program: &str, args: &[&str]) -> io::Result<String> {
-        let output = std::process::Command::new(program).args(args).output()?;
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        use std::io::Read;
+        use std::process::Stdio;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        // docs/architecture.md ("Sensor polling..."): no sensor read may
+        // block indefinitely — a hung subprocess (e.g. a stuck `nvidia-smi`)
+        // must time out and surface as an ordinary read error (mapped to
+        // `Unknown` by callers), never freeze the calling thread.
+        const TIMEOUT: Duration = Duration::from_secs(3);
+        const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+        let mut child = std::process::Command::new(program)
+            .args(args)
+            .stdout(Stdio::piped())
+            .spawn()?;
+
+        // Drain stdout on a background thread so the child can never block
+        // on a full pipe buffer while we poll `try_wait` below.
+        let mut stdout_pipe = child.stdout.take();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(pipe) = stdout_pipe.as_mut() {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            let _ = tx.send(buf);
+        });
+
+        let start = Instant::now();
+        loop {
+            if child.try_wait()?.is_some() {
+                break;
+            }
+            if start.elapsed() >= TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("`{program}` did not exit within {TIMEOUT:?}"),
+                ));
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+
+        let buf = rx.recv_timeout(TIMEOUT).unwrap_or_default();
+        Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 }
 

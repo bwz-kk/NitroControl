@@ -74,35 +74,27 @@ impl<R: SysfsReader, C: CommandRunner> GenericLinux<R, C> {
         }
     }
 
+    /// Runs `nvidia-smi --query-gpu=<field> --format=csv,noheader,nounits`
+    /// and parses the single numeric value it prints, shared by the
+    /// temperature and utilization discrete-GPU queries below.
+    fn nvidia_smi_metric(&self, query_gpu: &str) -> Option<f64> {
+        self.commands
+            .run("nvidia-smi", &[query_gpu, "--format=csv,noheader,nounits"])
+            .ok()
+            .and_then(|raw| raw.trim().parse::<f64>().ok())
+    }
+
     fn gpu_temperature_discrete(&self) -> CapabilityState<Celsius> {
-        match self.commands.run(
-            "nvidia-smi",
-            &[
-                "--query-gpu=temperature.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-        ) {
-            Ok(raw) => match raw.trim().parse::<f64>() {
-                Ok(celsius) => CapabilityState::Supported(Celsius(celsius)),
-                Err(_) => CapabilityState::Unknown,
-            },
-            Err(_) => CapabilityState::Unknown,
+        match self.nvidia_smi_metric("--query-gpu=temperature.gpu") {
+            Some(celsius) => CapabilityState::Supported(Celsius(celsius)),
+            None => CapabilityState::Unknown,
         }
     }
 
     fn gpu_utilization_discrete(&self) -> CapabilityState<Percent> {
-        match self.commands.run(
-            "nvidia-smi",
-            &[
-                "--query-gpu=utilization.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-        ) {
-            Ok(raw) => match raw.trim().parse::<f64>() {
-                Ok(percent) => CapabilityState::Supported(Percent(percent)),
-                Err(_) => CapabilityState::Unknown,
-            },
-            Err(_) => CapabilityState::Unknown,
+        match self.nvidia_smi_metric("--query-gpu=utilization.gpu") {
+            Some(percent) => CapabilityState::Supported(Percent(percent)),
+            None => CapabilityState::Unknown,
         }
     }
 }
@@ -262,12 +254,21 @@ impl<R: SysfsReader, C: CommandRunner> SensorProvider for GenericLinux<R, C> {
             Ok(e) => e,
             Err(_) => return CapabilityState::Unsupported,
         };
-        let Some(bat_dir) = entries.into_iter().find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("BAT"))
-                .unwrap_or(false)
-        }) else {
+        // Pick deterministically (lowest-numbered battery) rather than
+        // whatever order the filesystem happens to hand back entries in —
+        // `read_dir` order is unspecified, and on multi-battery machines an
+        // unordered `find` would flip between batteries from call to call.
+        let mut bat_dirs: Vec<PathBuf> = entries
+            .into_iter()
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("BAT"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        bat_dirs.sort();
+        let Some(bat_dir) = bat_dirs.into_iter().next() else {
             return CapabilityState::Unsupported;
         };
         let raw = match self.sysfs.read_to_string(&bat_dir.join("uevent")) {
@@ -275,9 +276,13 @@ impl<R: SysfsReader, C: CommandRunner> SensorProvider for GenericLinux<R, C> {
             Err(_) => return CapabilityState::Unknown,
         };
         let fields = parse_uevent(&raw);
+        // A battery percentage outside 0-100 is a corrupt/garbage reading,
+        // not real hardware state — never trusted blindly (same principle
+        // as the temperature/RAM plausibility checks above).
         let Some(percent) = fields
             .get("POWER_SUPPLY_CAPACITY")
             .and_then(|v| v.parse::<f64>().ok())
+            .filter(|p| (0.0..=100.0).contains(p))
         else {
             return CapabilityState::Unknown;
         };
@@ -737,6 +742,56 @@ mod tests {
         let p = provider(sysfs, MockCommandRunner::new());
 
         assert_eq!(p.battery(), CapabilityState::Unsupported);
+    }
+
+    #[test]
+    fn battery_unknown_when_capacity_out_of_bounds() {
+        // A capacity outside 0-100 is a corrupt/garbage reading — never
+        // trusted blindly (same principle as the temperature/RAM checks).
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/power_supply",
+            vec![PathBuf::from("/sys/class/power_supply/BAT1")],
+        );
+        sysfs.set_content(
+            "/sys/class/power_supply/BAT1/uevent",
+            "POWER_SUPPLY_STATUS=Full\nPOWER_SUPPLY_CAPACITY=127\n",
+        );
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(p.battery(), CapabilityState::Unknown);
+    }
+
+    #[test]
+    fn battery_picks_lowest_numbered_battery_deterministically() {
+        // On a multi-battery machine, `read_dir` order is unspecified —
+        // selection must not depend on it.
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/power_supply",
+            vec![
+                PathBuf::from("/sys/class/power_supply/BAT1"),
+                PathBuf::from("/sys/class/power_supply/BAT0"),
+            ],
+        );
+        sysfs.set_content(
+            "/sys/class/power_supply/BAT0/uevent",
+            "POWER_SUPPLY_STATUS=Discharging\nPOWER_SUPPLY_CAPACITY=42\n",
+        );
+        sysfs.set_content(
+            "/sys/class/power_supply/BAT1/uevent",
+            "POWER_SUPPLY_STATUS=Full\nPOWER_SUPPLY_CAPACITY=99\n",
+        );
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.battery(),
+            CapabilityState::Supported(BatteryState {
+                percent: 42.0,
+                status: BatteryStatus::Discharging,
+                power_watts: None,
+            })
+        );
     }
 
     #[test]
