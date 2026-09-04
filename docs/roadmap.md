@@ -48,12 +48,23 @@ Folded in findings from two web-research passes (Acer-specific ecosystem: `linuw
 - 105/105 workspace tests pass (12 new in `nitroctl-gui`), clippy/fmt clean.
 - Verification: launched the real GUI on the target machine (Hyprland/Wayland), screenshotted it (`grim`, installed for this purpose), and visually compared every displayed value against `nitroctl status`/`sensors` output captured at the same moment — RAM matched exactly, battery matched exactly, temperatures within normal sensor-to-sensor drift, CPU/dGPU utilization matched, iGPU utilization correctly showed "unknown" on both (path unconfirmed per hardware.md).
 
-## M5+ — Re-evaluate currently-unsupported capabilities
+## M5 — Fan/thermal control experiment — discovery done 2026-09-03
 
-Prior-art research (M0.1) turned this from an open-ended "wait for new evidence" milestone into a list of concrete, specific next experiments — but each still requires its own explicit user consent before running, since each touches live system/module state:
+The `predator_v4=1` experiment was run for real, with the user's explicit consent on each step. **Result: real, working, partial control found.** Full detail and evidence table in `hardware.md`'s "`predator_v4=1` experiment" section; summary:
 
-- **Fan/thermal profile (highest-priority experiment)**: reload `acer_wmi` with `predator_v4=1` (or a matching `force_series` value) and re-scan `/sys/class/hwmon` for new `pwm*`/`fan*_input` files, and `/sys/firmware/acpi/platform_profile` for activation — per `luizjr/nitro-sense-linux` (hardware.md), a working `predator_v4` model exposes fan control there directly, not through a bespoke API. Fully in-tree, reversible by reloading the module without the parameter — no out-of-tree module, no GPL-forking, no Secure Boot signing concern. Try this **before** considering any out-of-tree module. Record the outcome in `hardware.md` regardless of result.
-- **Battery charge limit**: track `acer-wmi-battery`'s platform-driver-x86 mailing-list submission for mainline inclusion; if merged, prefer that in-tree interface over any out-of-tree module.
+- Reloading `acer_wmi` with `predator_v4=1` activates a new `hwmon` device (`acer`: `fan1_input`/`fan2_input`/`temp1-3_input`, read-only) and populates `/sys/firmware/acpi/platform_profile` (both entirely absent by default).
+- Writing `platform_profile` is the real control surface (no `pwm*` write path exists): `low-power`, `quiet`, `balanced`, `balanced-performance` all write successfully and produce measured, causal fan-speed changes (largest: 2736→4030 RPM going to `balanced-performance`). `performance` fails with an EIO write error. **Root-caused via kernel source**: this is the EC/firmware itself rejecting the "Turbo" tier, not a Linux-side check — retested on AC power at 98% battery (ruling out an AC-gating hypothesis from Acer's own Windows behavior) and still failed identically. Independently confirmed on **two sibling models** (`Div-Acer-Manager-Max` issues #173 ANV15-51, #199 ANV15-52) with the exact same `[Errno 5]` — treated as this hardware class's real ceiling, not a config problem. Full detail in `hardware.md`.
+- Fully reversible: module unload/reload without the parameter returned the machine to its exact original state (`hwmon8` gone, `platform_profile` absent again) — confirmed live, not assumed.
+- Not yet done: making this active by default (needs a persistent `/etc/modprobe.d/acer_wmi.conf` — a boot-time system-config change requiring its own separate consent), a `SensorProvider`/`PowerProfileProvider` implementation surfacing this in `nitroctl-core`/CLI/GUI (needs its own SPECIFY→REVIEW pass per the project's process — this milestone only covers DISCOVER), and root-causing the `performance` EIO.
+
+**Next steps for M5, each still needing its own explicit go-ahead before starting**:
+- Decide & implement a persistent config path (`modprobe.d` boot param) so this isn't a manual per-boot reload — a system-configuration change.
+- Design (SPECIFY) how `HARDWARE_DEPENDENT` + "4/5 profiles work, one EIOs" surfaces honestly through `CapabilityState`/the CLI/the GUI — this is a new shape (a working capability with one *specific value* that fails), not yet modeled by any existing provider.
+- TDD-implement an Acer-specific `SensorProvider`/`PowerProfileProvider` (or extend `AcerNitroV15`) behind the usual `SysfsReader`/`CommandRunner` seams, on its own branch+PR per the established workflow.
+
+## M5+ — remaining re-evaluation items
+
+- **Battery charge limit**: `acer-wmi-battery`'s platform-driver-x86 mailing-list submission (Jelle van der Waa's v2 series, [LWN 2026-01-25](https://lwn.net/Articles/1055804/)) is still under review, not merged, as of this pass (`hardware.md` Third-party prior art) — keep tracking it; prefer that in-tree interface over any out-of-tree module once/if it lands.
 - **Out-of-tree module adoption** (`linuwu_sense`, `acer-wmi-battery`, `facer`, or similar): remains out of scope unless a future decision explicitly revisits it. Would require NitroControl to solve DKMS packaging and Secure Boot signing itself, since none of the surveyed projects ship these by default (`hardware.md` risk).
 - **Never trust a third-party compatibility table as evidence** (a community tool lists ANV15-41 as fully supported while this machine's runtime contradicts it) — always re-run Discovery on this exact machine before marking any result `Supported`.
 

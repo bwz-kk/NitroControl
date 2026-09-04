@@ -82,6 +82,33 @@ $ cat /sys/class/dmi/id/board_name → Sportage_RBH
   The remaining 14 of 18 GUIDs stay **unidentified**, unbound to any driver beyond generic `wmi_bmof`/passthrough attributes — documented as present, not acted upon. No capability should be built against an unidentified GUID without kernel-source or datasheet backing.
 - `/sys/kernel/debug/acer-wmi` exists but requires root (`debugfs`, standard restriction) — not accessed this pass since read-only-without-privilege was prioritized; may be revisited under `REQUIRES_PRIVILEGE` in a later milestone with explicit user consent.
 
+### `predator_v4=1` experiment — run 2026-09-03, with explicit user consent (M5)
+
+The reload experiment flagged above as the most actionable lead was run for real, on this exact machine, with the user confirming each step live. Full sequence: `sudo rmmod acer_wmi` → `sudo modprobe acer_wmi predator_v4=1` → inspect → `sudo rmmod acer_wmi` → `sudo modprobe acer_wmi` (back to no param). The module reloaded cleanly both directions, no kernel errors, no crash, no lingering state — confirms this stays a fully reversible, in-tree, no-DKMS, no-Secure-Boot-concern action, as predicted.
+
+**Result: real, working, partial fan and thermal-profile control appeared.**
+
+- A new hwmon device, `hwmon8` name `acer` (backed by `/sys/devices/platform/acer-wmi`), appeared immediately: `fan1_input`, `fan2_input`, `temp1_input`, `temp2_input`, `temp3_input` — all **read-only** (no `pwm*` file was present; this activates monitoring, not direct PWM writes). Baseline readings: fan1 2736 RPM, fan2 2579 RPM, temp1 56.0°C, temp2 52.0°C, temp3 51.0°C — plausible, matches `sensors`-class values seen elsewhere in this report, not placeholder/zero data.
+- `/sys/firmware/acpi/platform_profile` (previously entirely absent) came into existence, default value `balanced`, with `platform_profile_choices` = `low-power quiet balanced balanced-performance performance`.
+- **Writing to `platform_profile` produces a real, measurable fan-speed change** — this is the actual control surface, not `pwm*`:
+
+  | profile written | write result | fan1 RPM | fan2 RPM | temp1 |
+  |---|---|---|---|---|
+  | `balanced` (baseline, unwritten) | — | 2736 | 2579 | 56.0°C |
+  | `quiet` | succeeded | 2542 | 2316 | 55.0°C |
+  | `low-power` | succeeded | 2539 | 2328 | 54.0°C |
+  | `balanced-performance` | succeeded | **4030** | **3711** | 60.0°C |
+  | `performance` | **failed** — `tee: Input/output error` (EIO from the kernel/ACPI layer, not a permissions issue; profile value did not change) | n/a | n/a | n/a |
+  | `balanced` (restore) | succeeded | — | — | — |
+
+  `balanced-performance` moving fan1 from 2736→4030 RPM is a large, clearly-causal jump — the strongest positive hardware-control signal this project has found so far, on any capability. 4 of the 5 documented profile values are writable and produce distinct fan behavior; `performance` alone rejects the write at the firmware/ACPI level.
+- **Interpretation of the `performance` EIO — root-caused via mainline kernel source** (`drivers/platform/x86/acer-wmi.c`, follow-up research pass): `predator_v4=1` unconditionally selects `quirk_acer_predator_v4` in `find_quirks()` with no DMI check at all, and `acer_predator_v4_platform_profile_probe()` unconditionally advertises all 5 profile bits for any machine using this quirk — there's no per-model capability gating on the Linux side. Sysfs `performance` maps internally to `ACER_PREDATOR_V4_THERMAL_PROFILE_TURBO` (0x05), sent via `WMID_gaming_set_misc_setting()` → `WMI_gaming_execute_u64()` on `WMID_GUID4`. The function returns `-EIO` when the EC/firmware's own response carries a non-zero status byte for that value — **the rejection happens in the EC/firmware, not in Linux**. The kernel does define `ACER_WMID_MISC_SETTING_SUPPORTED_PROFILES` (0x000A) to query a real per-model supported-profile bitmap, but the driver's own source comment calls it `/* Unreliable on some models */` and doesn't use it in the profile-registration path — profiles are exposed unconditionally, accepting some will EIO on hardware that doesn't implement Turbo.
+- **AC-power-gating hypothesis tested and ruled out**: a platform-driver-x86 mailing-list thread (SungHwan Jung, re: Predator/Nitro WMI) states Acer's own EC restricts high-performance/Turbo modes to AC power on some models, and a Windows-side Acer Community report for a Nitro V 15 shows NitroSense greying out Performance/Turbo unless on AC with battery >60%. Retested live on this machine at **AC connected, battery 98%, charging** — `performance` write still failed with the identical `tee: Input/output error`. AC/battery state is not the blocker here.
+- **Independently corroborated on sibling hardware, not just this unit**: `PXDiv/Div-Acer-Manager-Max` issue #173 reports the **identical** `[Errno 5] Input/output error` writing `performance` on an **Acer Nitro ANV15-51** (Arch, kernel 6.13.10) — same 5-value profile list, same fallback to `balanced-performance`, everything else (fan control via their separate driver, battery limiter, RGB) working. Issue #199 (ANV15-52, Fedora) reports even `get` failing. Issue #119 (older Nitro 5 AN515-58) shows the same EIO pattern on read and write. No maintainer root-cause or fix is recorded in any of these. Also checked: `nitro_v4=1` (the quirk `Div-Linuwu-Sense` maps ANV15-41/-51 to) funnels through the identical `acer_predator_v4_platform_profile_set()` code path as `predator_v4=1` — not a parameter worth trying as an alternative, same EIO expected.
+- **Conclusion**: `performance`/Turbo is very likely a firmware/EC characteristic this Nitro V15-class hardware simply doesn't implement (Turbo has historically been Predator-branding, physical-button-gated), not a fixable driver-quirk-selection or power-state problem. **4 of 5 profiles is treated as the practical ceiling for this capability on this hardware**, not a temporary limitation.
+- **Not yet tested**: `temp2_input`/`temp3_input` behavior across profiles (only `temp1` was sampled during the write test), whether `acer_wmi`'s hotkey button-profile-cycle behavior changes with `predator_v4=1` active, and whether `power-profiles-daemon` would adopt this new `platform_profile` node automatically after a `power-profiles-daemon` service restart (it did **not** pick it up live without a restart — `powerprofilesctl list` still showed `PlatformDriver: placeholder` for `balanced`/`power-saver` while the experiment was running).
+- **Capability status update** (see Capability Matrix below): Fan RPM read and Acer-firmware power profile move from `UNSUPPORTED` (absence confirmed) to `HARDWARE_DEPENDENT` — real and working, but **only when `acer_wmi` is loaded with `predator_v4=1`, which is not this machine's default boot state**. Making this available by default would require a persistent module-parameter config (e.g. `/etc/modprobe.d/acer_wmi.conf`) — a boot-time system-configuration change, not yet made, requiring its own explicit consent before NitroControl (or its install docs) would rely on it being active.
+
 ## Third-party prior art (evidence, not endorsement)
 
 ### On this machine: DAMX
@@ -107,6 +134,11 @@ DAMX depends on an **out-of-tree** kernel module (`linuwu_sense`, specifically t
 - `nbfc-linux` issues [#219](https://github.com/nbfc-linux/nbfc-linux/issues/219) (ANV15-51-7037, i7-13620H/RTX4050) and [#188](https://github.com/nbfc-linux/nbfc-linux/issues/188) (closed "not planned"): fan RPM *reads* work via generic EC probing, but *writes* are silently ignored on this EC generation — consistent with the write path being gated behind proper WMI method calls rather than raw EC port pokes, which is the whole reason WMI-based drivers like `linuwu_sense` exist. PXDiv's own suggested workaround in #188 is "use DAMX instead" — not a claim that DAMX is independently verified to work, undercutting the "Full — Stable" claim further.
 
 Net: a compatibility-table claim getting *stronger* over time while independent, contemporaneous user reports describe the opposite is exactly the failure mode COMPAT-002 exists to guard against. Re-run this section's checks (`## Fans`) if this project's own BIOS is ever updated, per the re-verification triggers below.
+
+**Update (2026-09-04, `predator_v4`-adjacent research)**: two data points cut the other way and are recorded for balance, not to walk back the skepticism above — a compatibility table is still not evidence on its own:
+- `frederik-h/acer-wmi-battery` issue #92: a user reports the battery charge-limiter WMI method **does** work on an ANV15-41, Ubuntu 24.04.2 — no technical detail given, unverified on this machine, but a real positive report on the exact model for a different capability (battery, not fan).
+- `Div-Acer-Manager-Max` issue #168: a Nitro V15 user running the working `linuwu_sense`-based fan control reports it as real but **limited — a ~2000 RPM floor that can't be reduced further**, even when it "works." A useful caveat on what "Full — Stable" is actually worth in practice, even taken at face value.
+- No CachyOS-specific `acer_wmi` kernel patches were found (checked their kernel packaging) — this machine runs the same upstream driver any Arch-based distro would ship; nothing CachyOS-specific to account for in any of this section's results.
 
 ### Wider ecosystem, surveyed for completeness (none installed here, none adopted)
 
@@ -157,13 +189,13 @@ Net: a compatibility-table claim getting *stronger* over time while independent,
 | VRAM usage (dGPU) | SUPPORTED | SUPPORTED | N/A | NVML | Yes |
 | Battery status/charge % | SUPPORTED | SUPPORTED | N/A | `power_supply` BAT1 | Yes |
 | Battery charge limit | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | none found | Yes (absence confirmed) |
-| Fan RPM | UNSUPPORTED | UNSUPPORTED | N/A | none active; community `acer_nitro_ec` hwmon exists in the OOT module family (not installed) | Yes (absence confirmed) |
-| Fan control | UNSUPPORTED | N/A | UNSUPPORTED | none active; in-tree `acer_wmi` `WMID_GUID4`/`predator_v4` path present-but-disabled (untested experiment, see roadmap.md M5+) | Yes (absence confirmed) |
+| Fan RPM | HARDWARE_DEPENDENT | HARDWARE_DEPENDENT | N/A | `hwmon` `acer` (`fan1_input`/`fan2_input`), only present when `acer_wmi` is loaded with `predator_v4=1` (not this machine's default) | Yes — real RPM values read live during the M5 experiment (see `predator_v4=1 experiment` above); `UNSUPPORTED` under default boot config |
+| Fan control | HARDWARE_DEPENDENT | N/A | HARDWARE_DEPENDENT | `platform_profile` write (`low-power`/`quiet`/`balanced`/`balanced-performance` confirmed working, `performance` fails EIO), only when `predator_v4=1` loaded | Yes — measured real fan-speed change from a `platform_profile` write (2736→4030 RPM); `UNSUPPORTED` under default boot config; no direct `pwm*` write path found |
 | Power profile (OS-level) | SUPPORTED | HARDWARE_DEPENDENT | SUPPORTED | `power-profiles-daemon` D-Bus (`org.freedesktop.UPower.PowerProfiles`, fallback `net.hadess.PowerProfiles`) | Yes — `list`/`get`/`set` all exercised live (M3); no privilege needed (D-Bus policy is `context="default"`); `balanced`/`power-saver` run PPD's placeholder backend (switchable, no-op) |
-| Power profile (Acer firmware) | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | `platform_profile` absent | Yes (absence confirmed) |
+| Power profile (Acer firmware) | HARDWARE_DEPENDENT | HARDWARE_DEPENDENT | HARDWARE_DEPENDENT | `/sys/firmware/acpi/platform_profile`, only present when `acer_wmi` is loaded with `predator_v4=1` (not this machine's default) | Yes — `list`/`get`/`set` all exercised live during the M5 experiment; 4/5 profile values write successfully and change real fan RPM, `performance` fails EIO; node is entirely absent (`UNSUPPORTED`) under default boot config |
 | Keyboard backlight | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | no LED device found | Yes (absence confirmed) |
 | Acer hotkeys | SUPPORTED | SUPPORTED (input events) | N/A | `acer_wmi` input device | Yes (kernel log) |
-| Acer fan/thermal/RGB profiles | UNKNOWN/UNSUPPORTED | — | — | in-tree `acer_wmi` `WMID_GUID4` present but inactive (`predator_v4=N`, no DMI quirk match) | Yes (inactive state confirmed); untested `predator_v4=1` experiment identified for M5+ |
+| Acer fan/thermal/RGB profiles | HARDWARE_DEPENDENT (fan/thermal); UNKNOWN (RGB) | HARDWARE_DEPENDENT (fan/thermal) | HARDWARE_DEPENDENT (fan/thermal, partial — 4/5 values) | in-tree `acer_wmi` `WMID_GUID4` via `predator_v4=1`; RGB not tested this pass | Yes — `predator_v4=1` experiment run 2026-09-03, real results recorded above; RGB path still untested |
 
 ## Re-verification triggers
 
