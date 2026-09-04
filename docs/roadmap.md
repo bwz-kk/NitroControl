@@ -48,7 +48,7 @@ Folded in findings from two web-research passes (Acer-specific ecosystem: `linuw
 - 105/105 workspace tests pass (12 new in `nitroctl-gui`), clippy/fmt clean.
 - Verification: launched the real GUI on the target machine (Hyprland/Wayland), screenshotted it (`grim`, installed for this purpose), and visually compared every displayed value against `nitroctl status`/`sensors` output captured at the same moment — RAM matched exactly, battery matched exactly, temperatures within normal sensor-to-sensor drift, CPU/dGPU utilization matched, iGPU utilization correctly showed "unknown" on both (path unconfirmed per hardware.md).
 
-## M5 — Fan/thermal control — discovery done 2026-09-03, fan RPM read done 2026-09-04
+## M5 — Fan/thermal control — done 2026-09-04
 
 The `predator_v4=1` experiment was run for real, with the user's explicit consent on each step. **Result: real, working, partial control found.** Full detail and evidence table in `hardware.md`'s "`predator_v4=1` experiment" section; summary:
 
@@ -74,11 +74,15 @@ The `predator_v4=1` experiment was run for real, with the user's explicit consen
   - `predator_v4=1` loaded, unprivileged: `list`/`get` work and match raw sysfs exactly (`low-power, quiet, balanced, balanced-performance, performance` / `balanced`); `set quiet` → denied, names root/udev-rule (exit 3). Matches design.
   - `predator_v4=1` loaded, via `sudo`: `set quiet` → success (exit 0), `get` confirms `quiet` took effect — a real write, through NitroControl's own code, not a manual `tee`. `set performance` → `Input/output error (os error 5)` surfaced verbatim (exit 3, SAFE-004) — the same real EC EIO found in discovery, now reported by `nitroctl` itself. `set balanced` → restored cleanly.
   - Module unloaded/reloaded without the parameter afterward — confirmed back to default (`predator_v4=N`, `platform_profile` absent).
-- **User feedback from this session**: `balanced-performance` is the profile they actually want day-to-day on this hardware ("works really well") — the strongest-effect profile confirmed working (2736→4030 RPM in the M5 discovery measurement). Usable today via `sudo nitroctl acer-profile set balanced-performance` once `predator_v4=1` is loaded; needs the still-open persistent-config/udev-rule decisions below to become a no-sudo, no-manual-reload daily driver.
+- **User feedback from this session**: `balanced-performance` is the profile they actually want day-to-day on this hardware ("works really well") — the strongest-effect profile confirmed working (2736→4030 RPM in the M5 discovery measurement).
 
-**Remaining M5 work, each still needing its own explicit go-ahead before starting**:
-- Decide & implement a persistent config path (`modprobe.d` boot param) so `predator_v4=1` isn't a manual per-boot reload — a system-configuration change. Current lean (from the design pass): NitroControl itself stays detect-only, documents this as a manual opt-in step — not yet confirmed as a settled decision.
-- Decide whether to document/provide the `udev` rule from the privilege design above as a copy-paste manual step for users who want unprivileged `acer-profile set` — NitroControl still never installs it automatically.
+**Persistent config + unprivileged write: done 2026-09-04, applied live on this machine with explicit consent.** Both remaining M5 decisions were settled and actually implemented, not just designed:
+- `/etc/modprobe.d/nitrocontrol-acer-wmi.conf` (`options acer_wmi predator_v4=1`) makes `predator_v4=1` load automatically — verified by reloading the module *without* the parameter and confirming it still reads `Y`.
+- `/etc/udev/rules.d/90-nitrocontrol-acer-platform-profile.rules` relaxes `/sys/firmware/acpi/platform_profile` to `root:wheel 664` on every module load, using a real udev-matchable class device found this session (`/sys/class/platform-profile/platform-profile-0/`) as the trigger. Verified: `stat` confirms the exact permission, and `nitroctl acer-profile set balanced-performance` / `get` both succeeded **with no `sudo`**.
+- Both files documented as a copy-paste, manual, opt-in path for other users in the new `docs/optional-setup.md` — NitroControl-the-program still never installs either one itself, per `architecture.md`'s M5 design stance.
+- `balanced-performance` is now the user's working daily-driver profile, applied unprivileged, no manual per-boot reload. (The persistence mechanism applies at every module load unconditionally, including boot, by construction — not separately verified with an actual reboot this session.)
+
+M5 (fan RPM read + Acer-firmware power-profile control, FR-007) is now fully done: discovery, design, implementation, and real-world daily-use setup.
 
 ## M5+ — remaining re-evaluation items
 
