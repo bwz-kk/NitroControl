@@ -84,7 +84,7 @@ The `predator_v4=1` experiment was run for real, with the user's explicit consen
 
 M5 (fan RPM read + Acer-firmware power-profile control, FR-007) is now fully done: discovery, design, implementation, and real-world daily-use setup.
 
-## M6 — Battery charge limit (FR-008) — in progress, started 2026-09-04
+## M6 — Battery charge limit (FR-008) — done 2026-09-04
 
 Roadmap's M5+ battery-limit item resolved: **adopt now**, via a maintained fork, as an explicit exception to the out-of-tree-independence stance (see amended "Out of scope indefinitely" note below) — user's decision, not a default. Full design rationale in `architecture.md`'s new "Battery charge limit (M6, FR-008)" section; FR-008 added to `spec.md`. Summary of the three decisions made, reviewed with the user before writing any `nitroctl-core` code:
 
@@ -98,7 +98,9 @@ Rejected/deferred: waiting for the in-tree `platform-driver-x86` submission ([LW
 
 **Live verification: done 2026-09-04, with explicit user consent.** Fork built (`make LLVM=1`, this machine's kernel), loaded, and driven through the real `nitroctl` binary — default state, unprivileged read, unprivileged write correctly denied, privileged write confirmed via `dmesg` + readback, restore-and-unload confirmed. Full sequence in `hardware.md`'s "M6/FR-008 implementation — live verification" section. Permission bits confirmed live (root-owned, no group/other write) rather than assumed from FR-007's precedent.
 
-**Not yet done**: persistent module-load config and a udev rule for unprivileged writes (FR-007's M5 got both; M6 stopped at live verification this pass) — a separate decision, not made yet. `docs/optional-setup.md` has no battery-limit section until that happens.
+**Persistent setup: done 2026-09-04.** DKMS packaging (survives kernel upgrades) + `/etc/modules-load.d` autoload + a udev rule for unprivileged `health_mode` writes, mirroring FR-007's M5 pattern — documented as copy-paste-only in `docs/optional-setup.md`'s new "battery charge limit (M6, FR-008)" section (NitroControl itself never installs any of it, per SAFE-001/002). One real finding along the way: the udev trigger couldn't reuse FR-007's device-class-node pattern — the WMI device itself emits no bind uevent at all, and the module's own `add` event fires *before* the driver's probe creates `health_mode`. The **driver** kobject's `add` event (which the kernel only emits after probe has already run) is the reliable trigger; confirmed live (`root:wheel 664`, unprivileged `nitroctl battery-limit set on` succeeds with exit 0).
+
+M6 is now fully closed out end to end: design, implementation, live verification, and daily-use persistence.
 
 ## M5+ — remaining re-evaluation items
 
