@@ -26,6 +26,7 @@ use adw::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita as adw;
 
+use nitroctl_core::battery_limit::{AcerWmiBatteryBackend, BatteryLimitProvider};
 use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
 use nitroctl_core::power_profile::{
@@ -65,6 +66,14 @@ fn build_acer_profile_provider() -> Arc<dyn PowerProfileProvider> {
     )))
 }
 
+/// M6/FR-008: battery charge limit over the out-of-tree
+/// `bwz-kk/acer-wmi-battery` driver's `health_mode` — same shape as
+/// `build_acer_profile_provider()` above (no `connect()` step, "not
+/// available" per-call when the driver isn't loaded, the default state).
+fn build_battery_limit_provider() -> Arc<dyn BatteryLimitProvider> {
+    Arc::new(AcerWmiBatteryBackend::new(RealSysfsReader))
+}
+
 /// Every value the dashboard displays, read in one go on the worker thread.
 struct Snapshot {
     cpu_temperature: RowContent,
@@ -79,15 +88,17 @@ struct Snapshot {
     fan_rpm: RowContent,
     power_profile: RowContent,
     acer_profile: RowContent,
+    battery_limit: RowContent,
 }
 
-/// Blocking: reads every sensor + both power-profile sources off the
-/// shared, long-lived providers. Must only run on a worker thread
-/// (`gio::spawn_blocking`), never the GTK main thread.
+/// Blocking: reads every sensor + both power-profile sources + the battery
+/// limit off the shared, long-lived providers. Must only run on a worker
+/// thread (`gio::spawn_blocking`), never the GTK main thread.
 fn take_snapshot(
     sensors: &dyn SensorProvider,
     profile: &dyn PowerProfileProvider,
     acer_profile: &dyn PowerProfileProvider,
+    battery_limit: &dyn BatteryLimitProvider,
 ) -> Snapshot {
     Snapshot {
         cpu_temperature: format::cpu_temperature_row(&sensors.cpu_temperature()),
@@ -106,6 +117,7 @@ fn take_snapshot(
         fan_rpm: format::fan_rpm_row(&sensors.fan_rpm()),
         power_profile: format::profile_status_row(&profile.current_profile()),
         acer_profile: format::profile_status_row(&acer_profile.current_profile()),
+        battery_limit: format::battery_limit_row(&battery_limit.health_mode()),
     }
 }
 
@@ -143,6 +155,7 @@ struct Dashboard {
     fan_rpm: DashboardRow,
     power_profile: DashboardRow,
     acer_profile: DashboardRow,
+    battery_limit: DashboardRow,
 }
 
 impl Dashboard {
@@ -159,6 +172,7 @@ impl Dashboard {
         self.fan_rpm.update(&snapshot.fan_rpm);
         self.power_profile.update(&snapshot.power_profile);
         self.acer_profile.update(&snapshot.acer_profile);
+        self.battery_limit.update(&snapshot.battery_limit);
     }
 }
 
@@ -183,6 +197,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let fan_rpm = DashboardRow::new("Fan RPM");
     let power_profile = DashboardRow::new("Power Profile");
     let acer_profile = DashboardRow::new("Acer Firmware Profile");
+    let battery_limit = DashboardRow::new("Battery Charge Limit");
 
     let cpu_group = group(
         "CPU",
@@ -202,7 +217,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         ],
     );
     let memory_group = group("Memory", &[&ram_usage.widget]);
-    let battery_group = group("Battery", &[&battery.widget]);
+    let battery_group = group("Battery", &[&battery.widget, &battery_limit.widget]);
     let fans_group = group("Fans", &[&fan_rpm.widget]);
     let power_group = group(
         "Power Profile",
@@ -243,6 +258,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         fan_rpm,
         power_profile,
         acer_profile,
+        battery_limit,
     });
 
     // Built once, shared across every poll — see the module doc comment
@@ -250,6 +266,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let sensors = build_sensor_provider();
     let profile_provider = build_profile_provider();
     let acer_profile_provider = build_acer_profile_provider();
+    let battery_limit_provider = build_battery_limit_provider();
 
     // Guards against overlapping poll ticks: if a snapshot is still running
     // (e.g. a slow D-Bus call) when the next timer tick fires, that tick is
@@ -269,6 +286,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
             let sensors = sensors.clone();
             let profile_provider = profile_provider.clone();
             let acer_profile_provider = acer_profile_provider.clone();
+            let battery_limit_provider = battery_limit_provider.clone();
             let poll_in_flight = poll_in_flight.clone();
             glib::MainContext::default().spawn_local(async move {
                 let result = gio::spawn_blocking(move || {
@@ -276,6 +294,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
                         sensors.as_ref(),
                         profile_provider.as_ref(),
                         acer_profile_provider.as_ref(),
+                        battery_limit_provider.as_ref(),
                     )
                 })
                 .await;

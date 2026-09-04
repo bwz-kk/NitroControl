@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use nitroctl_core::battery_limit::{BatteryLimitError, BatteryLimitProvider};
 use nitroctl_core::capability::CapabilityState;
 use nitroctl_core::power_profile::{PowerProfileProvider, ProfileError, ProfileStatus};
 use nitroctl_core::sensor::{GpuKind, MemoryUsage, Percent, Rpm, SensorProvider};
@@ -361,6 +362,59 @@ pub fn run_acer_profile_set(provider: &dyn PowerProfileProvider, name: &str) -> 
         },
         Err(ProfileError::BackendFailed(message)) => CommandOutput {
             text: format!("Acer firmware power-profile write failed: {message}"),
+            exit_code: 3,
+        },
+    }
+}
+
+// ---- battery-limit (M6, FR-008) ----
+// Boolean toggle over `bwz-kk/acer-wmi-battery`'s health_mode, wording
+// tailored to that backend's real failure modes (driver not loaded, needs
+// root/udev-rule), same pattern as acer-profile above.
+
+fn format_health_mode(enabled: &bool) -> String {
+    if *enabled {
+        "on".to_string()
+    } else {
+        "off".to_string()
+    }
+}
+
+pub fn run_battery_limit_get(provider: &dyn BatteryLimitProvider) -> CommandOutput {
+    let state = provider.health_mode();
+    let (value, exit_code) = describe(&state, format_health_mode);
+    CommandOutput {
+        text: format!("Battery charge limit: {value}"),
+        exit_code,
+    }
+}
+
+pub fn run_battery_limit_set(provider: &dyn BatteryLimitProvider, enabled: bool) -> CommandOutput {
+    match provider.set_health_mode(enabled) {
+        Ok(()) => CommandOutput {
+            text: format!(
+                "Battery charge limit turned {}",
+                if enabled { "on" } else { "off" }
+            ),
+            exit_code: 0,
+        },
+        Err(BatteryLimitError::Unavailable) => CommandOutput {
+            text: "Battery charge limit interface is not available -- requires the \
+                   bwz-kk/acer-wmi-battery driver to be built and loaded \
+                   (see docs/optional-setup.md)"
+                .to_string(),
+            exit_code: 3,
+        },
+        Err(BatteryLimitError::Denied) => CommandOutput {
+            text: "Battery charge limit write was denied -- this needs root, \
+                   or a udev rule relaxing permission on \
+                   /sys/bus/wmi/drivers/acer-wmi-battery/health_mode \
+                   (see docs/optional-setup.md)"
+                .to_string(),
+            exit_code: 3,
+        },
+        Err(BatteryLimitError::Failed(message)) => CommandOutput {
+            text: format!("Battery charge limit write failed: {message}"),
             exit_code: 3,
         },
     }
@@ -978,6 +1032,138 @@ mod tests {
         };
 
         let out = run_acer_profile_set(&provider, "performance");
+
+        assert!(
+            out.text.contains("Input/output error (os error 5)"),
+            "{}",
+            out.text
+        );
+        assert_eq!(out.exit_code, 3);
+    }
+
+    // ---- run_battery_limit_get / _set (M6, FR-008) ----
+
+    struct FakeBatteryLimitProvider {
+        health_mode: CapabilityState<bool>,
+        set_result: Result<(), BatteryLimitError>,
+    }
+
+    impl Default for FakeBatteryLimitProvider {
+        fn default() -> Self {
+            Self {
+                health_mode: CapabilityState::Unsupported,
+                set_result: Ok(()),
+            }
+        }
+    }
+
+    impl BatteryLimitProvider for FakeBatteryLimitProvider {
+        fn health_mode(&self) -> CapabilityState<bool> {
+            self.health_mode.clone()
+        }
+        fn set_health_mode(&self, _enabled: bool) -> Result<(), BatteryLimitError> {
+            self.set_result.clone()
+        }
+    }
+
+    #[test]
+    fn battery_limit_get_prints_on_when_enabled() {
+        let provider = FakeBatteryLimitProvider {
+            health_mode: CapabilityState::Supported(true),
+            ..Default::default()
+        };
+
+        let out = run_battery_limit_get(&provider);
+
+        assert_eq!(out.text, "Battery charge limit: on");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn battery_limit_get_prints_off_when_disabled() {
+        let provider = FakeBatteryLimitProvider {
+            health_mode: CapabilityState::Supported(false),
+            ..Default::default()
+        };
+
+        let out = run_battery_limit_get(&provider);
+
+        assert_eq!(out.text, "Battery charge limit: off");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn battery_limit_get_unavailable_by_default_driver_not_loaded() {
+        let provider = FakeBatteryLimitProvider::default();
+
+        let out = run_battery_limit_get(&provider);
+
+        assert_eq!(out.text, "Battery charge limit: unavailable");
+        assert_eq!(out.exit_code, 1);
+    }
+
+    #[test]
+    fn battery_limit_set_success_prints_confirmation_and_exits_0() {
+        let provider = FakeBatteryLimitProvider {
+            set_result: Ok(()),
+            ..Default::default()
+        };
+
+        let out = run_battery_limit_set(&provider, true);
+
+        assert_eq!(out.text, "Battery charge limit turned on");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn battery_limit_set_off_prints_confirmation() {
+        let provider = FakeBatteryLimitProvider {
+            set_result: Ok(()),
+            ..Default::default()
+        };
+
+        let out = run_battery_limit_set(&provider, false);
+
+        assert_eq!(out.text, "Battery charge limit turned off");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn battery_limit_set_unavailable_names_the_driver_and_exits_3() {
+        let provider = FakeBatteryLimitProvider {
+            set_result: Err(BatteryLimitError::Unavailable),
+            ..Default::default()
+        };
+
+        let out = run_battery_limit_set(&provider, true);
+
+        assert!(out.text.contains("acer-wmi-battery"), "{}", out.text);
+        assert_eq!(out.exit_code, 3);
+    }
+
+    #[test]
+    fn battery_limit_set_denied_names_the_privilege_gap_and_exits_3() {
+        let provider = FakeBatteryLimitProvider {
+            set_result: Err(BatteryLimitError::Denied),
+            ..Default::default()
+        };
+
+        let out = run_battery_limit_set(&provider, true);
+
+        assert!(out.text.contains("root"), "{}", out.text);
+        assert_eq!(out.exit_code, 3);
+    }
+
+    #[test]
+    fn battery_limit_set_backend_failure_reports_verbatim_and_exits_3() {
+        let provider = FakeBatteryLimitProvider {
+            set_result: Err(BatteryLimitError::Failed(
+                "Input/output error (os error 5)".to_string(),
+            )),
+            ..Default::default()
+        };
+
+        let out = run_battery_limit_set(&provider, true);
 
         assert!(
             out.text.contains("Input/output error (os error 5)"),

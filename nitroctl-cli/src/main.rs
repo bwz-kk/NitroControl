@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
 use nitroctl_cli::commands::{
-    run_acer_profile_get, run_acer_profile_list, run_acer_profile_set, run_battery, run_diagnose,
-    run_fans, run_profile_get, run_profile_list, run_profile_set, run_sensors, run_status,
-    CommandOutput,
+    run_acer_profile_get, run_acer_profile_list, run_acer_profile_set, run_battery,
+    run_battery_limit_get, run_battery_limit_set, run_diagnose, run_fans, run_profile_get,
+    run_profile_list, run_profile_set, run_sensors, run_status, CommandOutput,
 };
+use nitroctl_core::battery_limit::AcerWmiBatteryBackend;
 use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
 use nitroctl_core::power_profile::{
@@ -39,6 +40,11 @@ enum Command {
     /// separate from `profile` (see docs/architecture.md's M5 design section).
     #[command(subcommand)]
     AcerProfile(ProfileCommand),
+    /// Battery charge limit (M6, FR-008) via the out-of-tree
+    /// bwz-kk/acer-wmi-battery driver's health_mode -- only real when that
+    /// module is built and loaded (see docs/optional-setup.md).
+    #[command(subcommand)]
+    BatteryLimit(BatteryLimitCommand),
     /// Capability matrix + evidence, for GitHub bug reports.
     Diagnose,
 }
@@ -51,6 +57,14 @@ enum ProfileCommand {
     Get,
     /// Set the active power profile.
     Set { name: String },
+}
+
+#[derive(Subcommand)]
+enum BatteryLimitCommand {
+    /// Show whether the battery charge limit (health mode) is on.
+    Get,
+    /// Turn the battery charge limit on or off ("on" or "off").
+    Set { state: String },
 }
 
 fn main() {
@@ -94,6 +108,23 @@ fn main() {
                 ProfileCommand::List => run_acer_profile_list(&acer_profile_provider),
                 ProfileCommand::Get => run_acer_profile_get(&acer_profile_provider),
                 ProfileCommand::Set { name } => run_acer_profile_set(&acer_profile_provider, &name),
+            }
+        }
+        Command::BatteryLimit(battery_limit_command) => {
+            // Same shape as AcerProfile above: no connect() step, pure
+            // sysfs reads/writes, "not available" shows up per-call when
+            // the out-of-tree driver isn't loaded (the default).
+            let battery_limit_provider = AcerWmiBatteryBackend::new(RealSysfsReader);
+            match battery_limit_command {
+                BatteryLimitCommand::Get => run_battery_limit_get(&battery_limit_provider),
+                BatteryLimitCommand::Set { state } => match state.as_str() {
+                    "on" => run_battery_limit_set(&battery_limit_provider, true),
+                    "off" => run_battery_limit_set(&battery_limit_provider, false),
+                    other => CommandOutput {
+                        text: format!("Invalid state {other:?}; valid choices: on, off"),
+                        exit_code: 2,
+                    },
+                },
             }
         }
     };
