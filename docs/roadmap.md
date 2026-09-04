@@ -84,14 +84,26 @@ The `predator_v4=1` experiment was run for real, with the user's explicit consen
 
 M5 (fan RPM read + Acer-firmware power-profile control, FR-007) is now fully done: discovery, design, implementation, and real-world daily-use setup.
 
+## M6 — Battery charge limit (FR-008) — in progress, started 2026-09-04
+
+Roadmap's M5+ battery-limit item resolved: **adopt now**, via a maintained fork, as an explicit exception to the out-of-tree-independence stance (see amended "Out of scope indefinitely" note below) — user's decision, not a default. Full design rationale in `architecture.md`'s new "Battery charge limit (M6, FR-008)" section; FR-008 added to `spec.md`. Summary of the three decisions made, reviewed with the user before writing any `nitroctl-core` code:
+
+- Fork lives at [`bwz-kk/acer-wmi-battery`](https://github.com/bwz-kk/acer-wmi-battery) (from `frederik-h/acer-wmi-battery` `9f90d75`), not vendored into this repo. Carries the M5+ discovery pass's out-of-bounds heap-read fix (`get_battery_health_control_status`/`set_battery_health_control` both dereferenced `obj->buffer.pointer` before validating `obj->buffer.length`) plus a `dkms.conf` upstream didn't ship — pushed 2026-09-04.
+- Scoped to `health_mode` only (the actual charge-limit toggle); `calibration_mode` deliberately deferred to its own future milestone.
+- Privilege model expected to mirror FR-007 (`RequiresPrivilege` by default, user's own udev rule to relax it) — exact permission bits to be confirmed empirically during implementation, not assumed.
+
+Rejected/deferred: waiting for the in-tree `platform-driver-x86` submission ([LWN #1055804](https://lwn.net/Articles/1055804/)) — still under mailing-list review as of this pass, no ETA, not present in this machine's kernel. Will switch to it (and archive the fork) once/if it merges.
+
+Implementation (TDD) not yet started by this SPECIFY pass.
+
 ## M5+ — remaining re-evaluation items
 
-- **Battery charge limit**: `acer-wmi-battery`'s platform-driver-x86 mailing-list submission (Jelle van der Waa's v2 series, [LWN 2026-01-25](https://lwn.net/Articles/1055804/)) is still under review, not merged, as of this pass (`hardware.md` Third-party prior art) — keep tracking it; prefer that in-tree interface over any out-of-tree module once/if it lands. **Update 2026-09-04**: a locally-patched build of `frederik-h/acer-wmi-battery` was tested live on this machine (discovery only, not adopted, full account in `hardware.md`) — confirms the hardware genuinely supports both `health_mode` and `calibration_mode`, not just the one issue #92 report. A real out-of-bounds-read bug was found and fixed locally in the process, not yet reported upstream. Whether to actually adopt this driver (DKMS packaging, ongoing patch maintenance, upstreaming the bug fix) remains its own separate decision — this pass only proves the capability is real, it doesn't resolve the out-of-tree-independence question below.
-- **Out-of-tree module adoption** (`linuwu_sense`, `acer-wmi-battery`, `facer`, or similar): remains out of scope unless a future decision explicitly revisits it. Would require NitroControl to solve DKMS packaging and Secure Boot signing itself, since none of the surveyed projects ship these by default (`hardware.md` risk). The battery-driver discovery test above was pure hands-on verification under this same rule — no code adopted, nothing installed persistently.
+- **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.
+- **Out-of-tree module adoption** (`linuwu_sense`, `facer`, or similar): still out of scope for everything except the one exception M6 makes for `acer-wmi-battery` (see amended "Out of scope indefinitely" note below). Would require NitroControl to solve DKMS packaging and Secure Boot signing itself for any other project, since none of the other surveyed projects ship these by default (`hardware.md` risk).
 - **Never trust a third-party compatibility table as evidence** (a community tool lists ANV15-41 as fully supported while this machine's runtime contradicts it) — always re-run Discovery on this exact machine before marking any result `Supported`.
 
 ## Out of scope indefinitely (unless hardware evidence changes this)
 
 - Arbitrary/raw hardware writes (`SAFE-002`, permanent).
 - Support claims for any Acer model other than ANV15-41 without independent verification on that model (`COMPAT-001`/`COMPAT-002`).
-- Forking or depending on any out-of-tree Acer control project (`linuwu_sense`, DAMX, `acer-wmi-battery`, `predator-sense`) for v1 — decision recorded in `hardware.md` §Third-party prior art.
+- Forking or depending on any out-of-tree Acer control project (`linuwu_sense`, DAMX, `predator-sense`) for v1 — decision recorded in `hardware.md` §Third-party prior art. **Amended 2026-09-04 (M6)**: `acer-wmi-battery` is a single, explicit, user-reviewed exception (see M6 above) — this bullet's default still holds for every other project and for any future case not separately decided.
