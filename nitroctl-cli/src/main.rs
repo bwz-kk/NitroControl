@@ -1,11 +1,14 @@
 use clap::{Parser, Subcommand};
 use nitroctl_cli::commands::{
-    run_battery, run_diagnose, run_fans, run_profile_get, run_profile_list, run_profile_set,
-    run_sensors, run_status, CommandOutput,
+    run_acer_profile_get, run_acer_profile_list, run_acer_profile_set, run_battery, run_diagnose,
+    run_fans, run_profile_get, run_profile_list, run_profile_set, run_sensors, run_status,
+    CommandOutput,
 };
 use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
-use nitroctl_core::power_profile::{FailedBackend, PowerProfilesDaemon, ZbusPowerProfilesBackend};
+use nitroctl_core::power_profile::{
+    AcerPlatformProfileBackend, FailedBackend, PowerProfilesDaemon, ZbusPowerProfilesBackend,
+};
 use nitroctl_core::sysfs::RealSysfsReader;
 
 #[derive(Parser)]
@@ -31,6 +34,11 @@ enum Command {
     /// Power profile control via power-profiles-daemon.
     #[command(subcommand)]
     Profile(ProfileCommand),
+    /// Acer-firmware power profile control via /sys/firmware/acpi/platform_profile
+    /// (M5, FR-007) — only real when acer_wmi is loaded with predator_v4=1,
+    /// separate from `profile` (see docs/architecture.md's M5 design section).
+    #[command(subcommand)]
+    AcerProfile(ProfileCommand),
     /// Capability matrix + evidence, for GitHub bug reports.
     Diagnose,
 }
@@ -71,6 +79,21 @@ fn main() {
                 ProfileCommand::List => run_profile_list(profile_provider.as_ref()),
                 ProfileCommand::Get => run_profile_get(profile_provider.as_ref()),
                 ProfileCommand::Set { name } => run_profile_set(profile_provider.as_ref(), &name),
+            }
+        }
+        Command::AcerProfile(profile_command) => {
+            // No connect() step, and so nothing that can fail up front like
+            // ZbusPowerProfilesBackend::connect() above — this backend is
+            // just sysfs reads/writes, so "not available" only shows up
+            // per-call (Unavailable, when the sysfs nodes are absent — the
+            // default state, since NitroControl never loads predator_v4=1
+            // itself).
+            let acer_profile_provider =
+                PowerProfilesDaemon::new(AcerPlatformProfileBackend::new(RealSysfsReader));
+            match profile_command {
+                ProfileCommand::List => run_acer_profile_list(&acer_profile_provider),
+                ProfileCommand::Get => run_acer_profile_get(&acer_profile_provider),
+                ProfileCommand::Set { name } => run_acer_profile_set(&acer_profile_provider, &name),
             }
         }
     };

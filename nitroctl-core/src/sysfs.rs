@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 pub trait SysfsReader: Send + Sync {
     fn read_to_string(&self, path: &Path) -> io::Result<String>;
     fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>>;
+    /// Writes `content` to `path` (e.g. `/sys/firmware/acpi/platform_profile`).
+    /// Added for M5's Acer-firmware power-profile backend — every other
+    /// provider is read-only, so this is the first write in the seam.
+    fn write_to_string(&self, path: &Path, content: &str) -> io::Result<()>;
 }
 
 /// Reads the real filesystem. Used in production.
@@ -25,6 +29,10 @@ impl SysfsReader for RealSysfsReader {
         std::fs::read_dir(path)?
             .map(|entry| entry.map(|e| e.path()))
             .collect()
+    }
+
+    fn write_to_string(&self, path: &Path, content: &str) -> io::Result<()> {
+        std::fs::write(path, content)
     }
 }
 
@@ -44,10 +52,17 @@ pub mod mock {
         PermissionDenied,
     }
 
+    enum WriteOutcome {
+        PermissionDenied,
+        Other(String),
+    }
+
     #[derive(Default)]
     pub struct MockSysfsReader {
         files: Mutex<HashMap<PathBuf, Entry>>,
         dirs: Mutex<HashMap<PathBuf, Vec<PathBuf>>>,
+        write_outcomes: Mutex<HashMap<PathBuf, WriteOutcome>>,
+        write_attempts: Mutex<HashMap<PathBuf, Vec<String>>>,
     }
 
     impl MockSysfsReader {
@@ -81,6 +96,37 @@ pub mod mock {
         pub fn set_dir(&self, path: impl Into<PathBuf>, entries: Vec<PathBuf>) {
             self.dirs.lock().unwrap().insert(path.into(), entries);
         }
+
+        /// Every future `write_to_string(path, _)` fails with `PermissionDenied`
+        /// instead of succeeding, and stored content for `path` is left
+        /// unchanged.
+        pub fn set_write_permission_denied(&self, path: impl Into<PathBuf>) {
+            self.write_outcomes
+                .lock()
+                .unwrap()
+                .insert(path.into(), WriteOutcome::PermissionDenied);
+        }
+
+        /// Every future `write_to_string(path, _)` fails with an
+        /// `ErrorKind::Other` error whose `Display` is exactly `message`
+        /// (e.g. to simulate the real EIO seen writing `performance` in the
+        /// M5 experiment), and stored content for `path` is left unchanged.
+        pub fn set_write_failure(&self, path: impl Into<PathBuf>, message: impl Into<String>) {
+            self.write_outcomes
+                .lock()
+                .unwrap()
+                .insert(path.into(), WriteOutcome::Other(message.into()));
+        }
+
+        /// The most recent value passed to `write_to_string(path, _)`,
+        /// whether or not that write ultimately succeeded.
+        pub fn last_write_attempt(&self, path: impl Into<PathBuf>) -> Option<String> {
+            self.write_attempts
+                .lock()
+                .unwrap()
+                .get(&path.into())
+                .and_then(|attempts| attempts.last().cloned())
+        }
     }
 
     impl SysfsReader for MockSysfsReader {
@@ -109,6 +155,29 @@ pub mod mock {
                 .get(path)
                 .cloned()
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+        }
+
+        fn write_to_string(&self, path: &Path, content: &str) -> io::Result<()> {
+            self.write_attempts
+                .lock()
+                .unwrap()
+                .entry(path.to_path_buf())
+                .or_default()
+                .push(content.to_string());
+
+            match self.write_outcomes.lock().unwrap().get(path) {
+                Some(WriteOutcome::PermissionDenied) => {
+                    Err(io::Error::from(io::ErrorKind::PermissionDenied))
+                }
+                Some(WriteOutcome::Other(message)) => Err(io::Error::other(message.clone())),
+                None => {
+                    self.files.lock().unwrap().insert(
+                        path.to_path_buf(),
+                        Entry::Content(vec![content.to_string()].into()),
+                    );
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -166,6 +235,47 @@ pub mod mock {
             let mock = MockSysfsReader::new();
             let err = mock.read_dir(Path::new("/nope")).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        }
+
+        #[test]
+        fn write_succeeds_by_default_and_is_reflected_on_next_read() {
+            let mock = MockSysfsReader::new();
+            mock.write_to_string(Path::new("/x"), "quiet").unwrap();
+            assert_eq!(mock.read_to_string(Path::new("/x")).unwrap(), "quiet");
+        }
+
+        #[test]
+        fn write_records_the_attempted_value_for_assertions() {
+            let mock = MockSysfsReader::new();
+            mock.write_to_string(Path::new("/x"), "quiet").unwrap();
+            assert_eq!(mock.last_write_attempt("/x"), Some("quiet".to_string()));
+        }
+
+        #[test]
+        fn configured_write_permission_denied_errors_and_does_not_change_stored_content() {
+            let mock = MockSysfsReader::new();
+            mock.set_content("/x", "balanced");
+            mock.set_write_permission_denied("/x");
+
+            let err = mock.write_to_string(Path::new("/x"), "quiet").unwrap_err();
+
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(mock.read_to_string(Path::new("/x")).unwrap(), "balanced");
+        }
+
+        #[test]
+        fn configured_write_failure_errors_with_the_given_message_and_does_not_change_stored_content(
+        ) {
+            let mock = MockSysfsReader::new();
+            mock.set_content("/x", "balanced");
+            mock.set_write_failure("/x", "Input/output error (os error 5)");
+
+            let err = mock
+                .write_to_string(Path::new("/x"), "performance")
+                .unwrap_err();
+
+            assert_eq!(err.to_string(), "Input/output error (os error 5)");
+            assert_eq!(mock.read_to_string(Path::new("/x")).unwrap(), "balanced");
         }
     }
 }

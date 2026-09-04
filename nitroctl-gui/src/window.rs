@@ -29,7 +29,8 @@ use libadwaita as adw;
 use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
 use nitroctl_core::power_profile::{
-    FailedBackend, PowerProfileProvider, PowerProfilesDaemon, ZbusPowerProfilesBackend,
+    AcerPlatformProfileBackend, FailedBackend, PowerProfileProvider, PowerProfilesDaemon,
+    ZbusPowerProfilesBackend,
 };
 use nitroctl_core::sensor::{GpuKind, SensorProvider};
 use nitroctl_core::sysfs::RealSysfsReader;
@@ -52,6 +53,18 @@ fn build_profile_provider() -> Arc<dyn PowerProfileProvider> {
     }
 }
 
+/// M5/FR-007: a second, independent `PowerProfileProvider` — see
+/// docs/architecture.md's M5 design section for why this stays separate
+/// from `build_profile_provider()` above rather than merged. No `connect()`
+/// step (unlike D-Bus): this is just sysfs reads/writes, so "not available"
+/// only shows up per-call (`Unsupported`, the default state, since
+/// NitroControl never loads `predator_v4=1` itself).
+fn build_acer_profile_provider() -> Arc<dyn PowerProfileProvider> {
+    Arc::new(PowerProfilesDaemon::new(AcerPlatformProfileBackend::new(
+        RealSysfsReader,
+    )))
+}
+
 /// Every value the dashboard displays, read in one go on the worker thread.
 struct Snapshot {
     cpu_temperature: RowContent,
@@ -65,12 +78,17 @@ struct Snapshot {
     battery: RowContent,
     fan_rpm: RowContent,
     power_profile: RowContent,
+    acer_profile: RowContent,
 }
 
-/// Blocking: reads every sensor + the power profile off the shared,
-/// long-lived providers. Must only run on a worker thread
+/// Blocking: reads every sensor + both power-profile sources off the
+/// shared, long-lived providers. Must only run on a worker thread
 /// (`gio::spawn_blocking`), never the GTK main thread.
-fn take_snapshot(sensors: &dyn SensorProvider, profile: &dyn PowerProfileProvider) -> Snapshot {
+fn take_snapshot(
+    sensors: &dyn SensorProvider,
+    profile: &dyn PowerProfileProvider,
+    acer_profile: &dyn PowerProfileProvider,
+) -> Snapshot {
     Snapshot {
         cpu_temperature: format::cpu_temperature_row(&sensors.cpu_temperature()),
         igpu_temperature: format::gpu_temperature_row(
@@ -87,6 +105,7 @@ fn take_snapshot(sensors: &dyn SensorProvider, profile: &dyn PowerProfileProvide
         battery: format::battery_row(&sensors.battery()),
         fan_rpm: format::fan_rpm_row(&sensors.fan_rpm()),
         power_profile: format::profile_status_row(&profile.current_profile()),
+        acer_profile: format::profile_status_row(&acer_profile.current_profile()),
     }
 }
 
@@ -123,6 +142,7 @@ struct Dashboard {
     battery: DashboardRow,
     fan_rpm: DashboardRow,
     power_profile: DashboardRow,
+    acer_profile: DashboardRow,
 }
 
 impl Dashboard {
@@ -138,6 +158,7 @@ impl Dashboard {
         self.battery.update(&snapshot.battery);
         self.fan_rpm.update(&snapshot.fan_rpm);
         self.power_profile.update(&snapshot.power_profile);
+        self.acer_profile.update(&snapshot.acer_profile);
     }
 }
 
@@ -161,6 +182,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let battery = DashboardRow::new("Battery");
     let fan_rpm = DashboardRow::new("Fan RPM");
     let power_profile = DashboardRow::new("Power Profile");
+    let acer_profile = DashboardRow::new("Acer Firmware Profile");
 
     let cpu_group = group(
         "CPU",
@@ -182,7 +204,10 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let memory_group = group("Memory", &[&ram_usage.widget]);
     let battery_group = group("Battery", &[&battery.widget]);
     let fans_group = group("Fans", &[&fan_rpm.widget]);
-    let power_group = group("Power Profile", &[&power_profile.widget]);
+    let power_group = group(
+        "Power Profile",
+        &[&power_profile.widget, &acer_profile.widget],
+    );
 
     let page = adw::PreferencesPage::new();
     page.add(&cpu_group);
@@ -217,12 +242,14 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         battery,
         fan_rpm,
         power_profile,
+        acer_profile,
     });
 
     // Built once, shared across every poll — see the module doc comment
     // for why a fresh provider per tick would break cpu_utilization.
     let sensors = build_sensor_provider();
     let profile_provider = build_profile_provider();
+    let acer_profile_provider = build_acer_profile_provider();
 
     // Guards against overlapping poll ticks: if a snapshot is still running
     // (e.g. a slow D-Bus call) when the next timer tick fires, that tick is
@@ -241,10 +268,15 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
             let dashboard = dashboard.clone();
             let sensors = sensors.clone();
             let profile_provider = profile_provider.clone();
+            let acer_profile_provider = acer_profile_provider.clone();
             let poll_in_flight = poll_in_flight.clone();
             glib::MainContext::default().spawn_local(async move {
                 let result = gio::spawn_blocking(move || {
-                    take_snapshot(sensors.as_ref(), profile_provider.as_ref())
+                    take_snapshot(
+                        sensors.as_ref(),
+                        profile_provider.as_ref(),
+                        acer_profile_provider.as_ref(),
+                    )
                 })
                 .await;
                 poll_in_flight.set(false);
