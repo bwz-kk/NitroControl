@@ -5,9 +5,19 @@
 //! interfaces as any other machine (`k10temp`, `amdgpu`, `/proc/stat`,
 //! `/proc/meminfo`, `power_supply`) — nothing Acer-specific backs them today.
 //! So for v1 this provider delegates entirely to `GenericLinux`. Acer-specific
-//! divergence (fan control via `predator_v4`, battery charge limit, etc.) is
+//! divergence (battery charge limit, Acer-firmware power profile, etc.) is
 //! deferred to roadmap.md M5+ and will override individual methods here once
 //! verified, per COMPAT-001/COMPAT-002 — never assumed in advance.
+//!
+//! **Fan RPM is the one M5 exception already covered, with no code change
+//! needed**: `GenericLinux::fan_rpm()` scans every `hwmon` device generically
+//! for `fan*_input` files, not by chip name — so when `acer_wmi` is loaded
+//! with `predator_v4=1` (see hardware.md's M5 experiment) and its `acer`
+//! hwmon device appears with real `fan1_input`/`fan2_input`, delegating here
+//! already surfaces it as `Supported`. Verified live in M5 (see roadmap.md).
+//! This is not the machine's default boot state — `predator_v4=1` isn't
+//! loaded automatically by NitroControl or by CachyOS out of the box, so
+//! `fan_rpm()` reads `Unsupported` unless a user has manually enabled it.
 
 use crate::capability::CapabilityState;
 use crate::command::CommandRunner;
@@ -59,10 +69,11 @@ impl<R: SysfsReader, C: CommandRunner> SensorProvider for AcerNitroV15<R, C> {
     }
 
     fn fan_rpm(&self) -> CapabilityState<Vec<Rpm>> {
-        // Evidence in docs/hardware.md: no fan hwmon exists on this machine.
-        // Delegating to `generic` would find the same absence, but this is
-        // pinned explicitly so the "why" is visible at the Acer-specific
-        // layer, not just inherited silently.
+        // See the module doc comment: GenericLinux's generic hwmon scan
+        // already picks up the `acer` hwmon device (fan1_input/fan2_input)
+        // once predator_v4=1 is loaded — no Acer-specific override needed.
+        // Pinned explicitly here (rather than left purely implicit via
+        // delegation) so the "why" is visible at the Acer-specific layer.
         self.generic.fan_rpm()
     }
 }
@@ -92,9 +103,38 @@ mod tests {
     }
 
     #[test]
-    fn fan_rpm_is_unsupported_on_this_machine_per_hardware_md() {
+    fn fan_rpm_is_unsupported_by_default_predator_v4_not_loaded() {
         let p = AcerNitroV15::new(MockSysfsReader::new(), MockCommandRunner::new());
 
         assert_eq!(p.fan_rpm(), CapabilityState::Unsupported);
+    }
+
+    // Locks in current (already-correct) behavior confirmed live in the M5
+    // predator_v4=1 experiment (roadmap.md) — not a red/green TDD cycle,
+    // since GenericLinux::fan_rpm()'s generic hwmon scan required no
+    // production code change to pick up the `acer` device once present.
+    #[test]
+    fn fan_rpm_supported_when_acer_hwmon_present_predator_v4_loaded() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/hwmon",
+            vec![PathBuf::from("/sys/class/hwmon/hwmon8")],
+        );
+        sysfs.set_dir(
+            "/sys/class/hwmon/hwmon8",
+            vec![
+                PathBuf::from("/sys/class/hwmon/hwmon8/fan1_input"),
+                PathBuf::from("/sys/class/hwmon/hwmon8/fan2_input"),
+            ],
+        );
+        sysfs.set_content("/sys/class/hwmon/hwmon8/name", "acer\n");
+        sysfs.set_content("/sys/class/hwmon/hwmon8/fan1_input", "2945\n");
+        sysfs.set_content("/sys/class/hwmon/hwmon8/fan2_input", "2576\n");
+        let p = AcerNitroV15::new(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.fan_rpm(),
+            CapabilityState::Supported(vec![Rpm(2945), Rpm(2576)])
+        );
     }
 }
