@@ -5,6 +5,7 @@
 //! without a live D-Bus connection.
 
 use crate::capability::CapabilityState;
+use crate::sysfs::SysfsReader;
 
 /// One entry of PPD's `Profiles` D-Bus property (verified shape via
 /// `busctl introspect`, docs/hardware.md M3): each dict has a `Profile`
@@ -312,6 +313,80 @@ impl PowerProfilesBackend for FailedBackend {
     }
 }
 
+/// Acer-firmware power-profile backend (M5, FR-007) — reads/writes
+/// `/sys/firmware/acpi/platform_profile` directly via `SysfsReader`,
+/// instead of `power-profiles-daemon`'s D-Bus interface. See
+/// docs/architecture.md's "Acer-firmware power profile (M5, FR-007)"
+/// section for why this is a second backend rather than routed through
+/// PPD: PPD's 3-profile set would collapse the 5 real ACPI values
+/// docs/hardware.md's M5 experiment measured distinct fan behavior for.
+///
+/// Both files are only present when `acer_wmi` is loaded with
+/// `predator_v4=1` — absent by default, which reads as `Unavailable`
+/// (`CapabilityState::Unsupported` once through `PowerProfilesDaemon`),
+/// exactly like any other not-installed backend. NitroControl never loads
+/// that module parameter itself (SAFE-001/SAFE-002).
+pub struct AcerPlatformProfileBackend<R: SysfsReader> {
+    sysfs: R,
+}
+
+const PLATFORM_PROFILE_PATH: &str = "/sys/firmware/acpi/platform_profile";
+const PLATFORM_PROFILE_CHOICES_PATH: &str = "/sys/firmware/acpi/platform_profile_choices";
+
+impl<R: SysfsReader> AcerPlatformProfileBackend<R> {
+    pub fn new(sysfs: R) -> Self {
+        Self { sysfs }
+    }
+}
+
+/// Classifies a sysfs IO error the same way for both reads and writes:
+/// the file/node not existing means the backend isn't active (absence is
+/// the *normal*, default state here — see the struct doc comment), a
+/// permission error means privilege is genuinely required, anything else
+/// (e.g. the real `-EIO` docs/hardware.md's M5 experiment found writing
+/// `performance`) is reported verbatim per SAFE-004 rather than guessed at.
+fn map_sysfs_error(err: std::io::Error) -> BackendError {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => BackendError::Unavailable,
+        std::io::ErrorKind::PermissionDenied => BackendError::Denied,
+        _ => BackendError::Other(err.to_string()),
+    }
+}
+
+impl<R: SysfsReader> PowerProfilesBackend for AcerPlatformProfileBackend<R> {
+    fn profiles(&self) -> Result<Vec<ProfileInfo>, BackendError> {
+        let raw = self
+            .sysfs
+            .read_to_string(std::path::Path::new(PLATFORM_PROFILE_CHOICES_PATH))
+            .map_err(map_sysfs_error)?;
+        Ok(raw
+            .split_whitespace()
+            .map(|name| ProfileInfo {
+                name: name.to_string(),
+                // No placeholder concept applies to this backend — every
+                // choice ACPI advertises is a real value NitroControl can
+                // attempt to write; whether it's *accepted* (hardware_backed
+                // in ProfileStatus) is only known once set_active_profile()
+                // is actually tried (docs/hardware.md: 4 of 5 do, one EIOs).
+                is_placeholder: false,
+            })
+            .collect())
+    }
+
+    fn active_profile_name(&self) -> Result<String, BackendError> {
+        self.sysfs
+            .read_to_string(std::path::Path::new(PLATFORM_PROFILE_PATH))
+            .map(|raw| raw.trim().to_string())
+            .map_err(map_sysfs_error)
+    }
+
+    fn set_active_profile(&self, name: &str) -> Result<(), BackendError> {
+        self.sysfs
+            .write_to_string(std::path::Path::new(PLATFORM_PROFILE_PATH), name)
+            .map_err(map_sysfs_error)
+    }
+}
+
 #[cfg(test)]
 pub mod mock {
     use super::*;
@@ -588,5 +663,208 @@ mod tests {
         let result = provider.set_profile("balanced");
 
         assert_eq!(result, Err(ProfileError::BackendDenied));
+    }
+
+    // ---- AcerPlatformProfileBackend (M5, FR-007) ----
+    // Per docs/architecture.md's M5 design section: a second
+    // PowerProfilesBackend impl, backed by /sys/firmware/acpi/platform_profile
+    // directly rather than D-Bus, so it plugs into PowerProfilesDaemon/
+    // PowerProfileProvider unchanged.
+
+    mod acer_platform_profile_backend {
+        use super::*;
+        use crate::sysfs::mock::MockSysfsReader;
+
+        const PROFILE_PATH: &str = "/sys/firmware/acpi/platform_profile";
+        const CHOICES_PATH: &str = "/sys/firmware/acpi/platform_profile_choices";
+
+        #[test]
+        fn profiles_reads_platform_profile_choices() {
+            let sysfs = MockSysfsReader::new();
+            sysfs.set_content(
+                CHOICES_PATH,
+                "low-power quiet balanced balanced-performance performance\n",
+            );
+            let backend = AcerPlatformProfileBackend::new(sysfs);
+
+            let profiles = backend.profiles().unwrap();
+
+            assert_eq!(
+                profiles,
+                vec![
+                    ProfileInfo {
+                        name: "low-power".to_string(),
+                        is_placeholder: false
+                    },
+                    ProfileInfo {
+                        name: "quiet".to_string(),
+                        is_placeholder: false
+                    },
+                    ProfileInfo {
+                        name: "balanced".to_string(),
+                        is_placeholder: false
+                    },
+                    ProfileInfo {
+                        name: "balanced-performance".to_string(),
+                        is_placeholder: false
+                    },
+                    ProfileInfo {
+                        name: "performance".to_string(),
+                        is_placeholder: false
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn profiles_unavailable_when_choices_file_absent_predator_v4_not_loaded() {
+            let backend = AcerPlatformProfileBackend::new(MockSysfsReader::new());
+
+            assert_eq!(backend.profiles(), Err(BackendError::Unavailable));
+        }
+
+        #[test]
+        fn active_profile_name_reads_platform_profile() {
+            let sysfs = MockSysfsReader::new();
+            sysfs.set_content(PROFILE_PATH, "balanced\n");
+            let backend = AcerPlatformProfileBackend::new(sysfs);
+
+            assert_eq!(backend.active_profile_name(), Ok("balanced".to_string()));
+        }
+
+        #[test]
+        fn active_profile_name_unavailable_when_file_absent() {
+            let backend = AcerPlatformProfileBackend::new(MockSysfsReader::new());
+
+            assert_eq!(
+                backend.active_profile_name(),
+                Err(BackendError::Unavailable)
+            );
+        }
+
+        #[test]
+        fn set_active_profile_writes_platform_profile() {
+            let sysfs = MockSysfsReader::new();
+            let backend = AcerPlatformProfileBackend::new(sysfs);
+
+            let result = backend.set_active_profile("quiet");
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(backend.active_profile_name(), Ok("quiet".to_string()));
+        }
+
+        #[test]
+        fn set_active_profile_denied_when_write_permission_denied() {
+            let sysfs = MockSysfsReader::new();
+            sysfs.set_write_permission_denied(PROFILE_PATH);
+            let backend = AcerPlatformProfileBackend::new(sysfs);
+
+            assert_eq!(
+                backend.set_active_profile("quiet"),
+                Err(BackendError::Denied)
+            );
+        }
+
+        #[test]
+        fn set_active_profile_reports_the_real_eio_seen_writing_performance_in_m5() {
+            let sysfs = MockSysfsReader::new();
+            sysfs.set_write_failure(PROFILE_PATH, "Input/output error (os error 5)");
+            let backend = AcerPlatformProfileBackend::new(sysfs);
+
+            assert_eq!(
+                backend.set_active_profile("performance"),
+                Err(BackendError::Other(
+                    "Input/output error (os error 5)".to_string()
+                ))
+            );
+        }
+
+        // Integration-style: confirms the new backend composes correctly
+        // with PowerProfilesDaemon's existing validation/state-mapping
+        // logic (already covered generically above), not just in isolation.
+
+        #[test]
+        fn through_power_profiles_daemon_unsupported_by_default_predator_v4_not_loaded() {
+            let provider =
+                PowerProfilesDaemon::new(AcerPlatformProfileBackend::new(MockSysfsReader::new()));
+
+            assert_eq!(provider.list_profiles(), CapabilityState::Unsupported);
+            assert_eq!(provider.current_profile(), CapabilityState::Unsupported);
+        }
+
+        #[test]
+        fn through_power_profiles_daemon_rejects_invalid_profile_without_writing_safe_003() {
+            let sysfs = MockSysfsReader::new();
+            sysfs.set_content(
+                CHOICES_PATH,
+                "low-power quiet balanced balanced-performance performance\n",
+            );
+            let provider = PowerProfilesDaemon::new(AcerPlatformProfileBackend::new(sysfs));
+
+            let result = provider.set_profile("turbo-nitro-mode");
+
+            assert_eq!(
+                result,
+                Err(ProfileError::InvalidProfile {
+                    requested: "turbo-nitro-mode".to_string(),
+                    valid: vec![
+                        "low-power".to_string(),
+                        "quiet".to_string(),
+                        "balanced".to_string(),
+                        "balanced-performance".to_string(),
+                        "performance".to_string(),
+                    ],
+                })
+            );
+        }
+
+        #[test]
+        fn through_power_profiles_daemon_set_valid_profile_writes_and_reports_success() {
+            let sysfs = MockSysfsReader::new();
+            sysfs.set_content(
+                CHOICES_PATH,
+                "low-power quiet balanced balanced-performance performance\n",
+            );
+            let provider = PowerProfilesDaemon::new(AcerPlatformProfileBackend::new(sysfs));
+
+            assert_eq!(provider.set_profile("quiet"), Ok(()));
+            assert_eq!(
+                provider.current_profile(),
+                CapabilityState::Supported(ProfileStatus {
+                    name: "quiet".to_string(),
+                    hardware_backed: true,
+                })
+            );
+        }
+
+        #[test]
+        fn through_power_profiles_daemon_performance_write_failure_reported_not_assumed_success() {
+            let sysfs = MockSysfsReader::new();
+            sysfs.set_content(
+                CHOICES_PATH,
+                "low-power quiet balanced balanced-performance performance\n",
+            );
+            sysfs.set_content(PROFILE_PATH, "balanced\n");
+            sysfs.set_write_failure(PROFILE_PATH, "Input/output error (os error 5)");
+            let provider = PowerProfilesDaemon::new(AcerPlatformProfileBackend::new(sysfs));
+
+            let result = provider.set_profile("performance");
+
+            assert_eq!(
+                result,
+                Err(ProfileError::BackendFailed(
+                    "Input/output error (os error 5)".to_string()
+                ))
+            );
+            // SAFE-004: a failed write must not be reported/assumed as a
+            // profile change -- state stays what it was before the attempt.
+            assert_eq!(
+                provider.current_profile(),
+                CapabilityState::Supported(ProfileStatus {
+                    name: "balanced".to_string(),
+                    hardware_backed: true,
+                })
+            );
+        }
     }
 }

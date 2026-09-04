@@ -307,6 +307,65 @@ pub fn run_profile_set(provider: &dyn PowerProfileProvider, name: &str) -> Comma
     }
 }
 
+// ---- acer-profile (M5, FR-007) ----
+// Same PowerProfileProvider trait as `profile` above, backed by a
+// different instance (AcerPlatformProfileBackend, nitroctl-core) rather
+// than power-profiles-daemon -- kept as separate commands per
+// docs/architecture.md's M5 design section, with wording tailored to this
+// backend's actual failure modes (predator_v4 not loaded, needs root)
+// rather than reusing power-profiles-daemon's generic messages.
+
+pub fn run_acer_profile_list(provider: &dyn PowerProfileProvider) -> CommandOutput {
+    let state = provider.list_profiles();
+    let (value, exit_code) = describe(&state, |names: &Vec<String>| names.join(", "));
+    CommandOutput {
+        text: format!("Acer profiles: {value}"),
+        exit_code,
+    }
+}
+
+pub fn run_acer_profile_get(provider: &dyn PowerProfileProvider) -> CommandOutput {
+    let state = provider.current_profile();
+    let (value, exit_code) = describe(&state, format_profile_status);
+    CommandOutput {
+        text: format!("Acer power profile: {value}"),
+        exit_code,
+    }
+}
+
+pub fn run_acer_profile_set(provider: &dyn PowerProfileProvider, name: &str) -> CommandOutput {
+    match provider.set_profile(name) {
+        Ok(()) => CommandOutput {
+            text: format!("Acer power profile set to {name}"),
+            exit_code: 0,
+        },
+        Err(ProfileError::InvalidProfile { requested, valid }) => CommandOutput {
+            text: format!(
+                "Invalid profile {requested:?}; valid choices: {}",
+                valid.join(", ")
+            ),
+            exit_code: 2,
+        },
+        Err(ProfileError::BackendUnavailable) => CommandOutput {
+            text: "Acer firmware power-profile interface is not available \
+                   (requires acer_wmi to be loaded with predator_v4=1 -- see docs/hardware.md)"
+                .to_string(),
+            exit_code: 3,
+        },
+        Err(ProfileError::BackendDenied) => CommandOutput {
+            text: "Acer firmware power-profile write was denied -- this needs root, \
+                   or a udev rule relaxing permission on \
+                   /sys/firmware/acpi/platform_profile (see docs/architecture.md)"
+                .to_string(),
+            exit_code: 3,
+        },
+        Err(ProfileError::BackendFailed(message)) => CommandOutput {
+            text: format!("Acer firmware power-profile write failed: {message}"),
+            exit_code: 3,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -788,6 +847,143 @@ mod tests {
 
         let out = run_profile_set(&provider, "balanced");
 
+        assert_eq!(out.exit_code, 3);
+    }
+
+    // ---- run_acer_profile_list / _get / _set (M5, FR-007) ----
+    // Same FakePowerProfileProvider as the OS-level `profile` command above
+    // (same trait) -- these tests only lock in the Acer-specific wording and
+    // hint text, since the state-mapping logic itself is already covered.
+
+    #[test]
+    fn acer_profile_list_prints_comma_separated_names() {
+        let provider = FakePowerProfileProvider {
+            list_profiles: CapabilityState::Supported(vec![
+                "low-power".to_string(),
+                "quiet".to_string(),
+                "balanced".to_string(),
+                "balanced-performance".to_string(),
+                "performance".to_string(),
+            ]),
+            ..Default::default()
+        };
+
+        let out = run_acer_profile_list(&provider);
+
+        assert_eq!(
+            out.text,
+            "Acer profiles: low-power, quiet, balanced, balanced-performance, performance"
+        );
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn acer_profile_list_unsupported_by_default_predator_v4_not_loaded() {
+        let provider = FakePowerProfileProvider::default();
+
+        let out = run_acer_profile_list(&provider);
+
+        assert_eq!(out.text, "Acer profiles: unavailable");
+        assert_eq!(out.exit_code, 1);
+    }
+
+    #[test]
+    fn acer_profile_get_prints_the_active_profile_name() {
+        let provider = FakePowerProfileProvider {
+            current_profile: CapabilityState::Supported(ProfileStatus {
+                name: "balanced-performance".to_string(),
+                hardware_backed: true,
+            }),
+            ..Default::default()
+        };
+
+        let out = run_acer_profile_get(&provider);
+
+        assert_eq!(out.text, "Acer power profile: balanced-performance");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn acer_profile_set_success_prints_confirmation_and_exits_0() {
+        let provider = FakePowerProfileProvider {
+            set_result: Ok(()),
+            ..Default::default()
+        };
+
+        let out = run_acer_profile_set(&provider, "quiet");
+
+        assert_eq!(out.text, "Acer power profile set to quiet");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn acer_profile_set_invalid_name_names_the_valid_choices_and_exits_2() {
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::InvalidProfile {
+                requested: "turbo-nitro-mode".to_string(),
+                valid: vec!["balanced".to_string(), "performance".to_string()],
+            }),
+            ..Default::default()
+        };
+
+        let out = run_acer_profile_set(&provider, "turbo-nitro-mode");
+
+        assert!(out.text.contains("turbo-nitro-mode"), "{}", out.text);
+        assert!(out.text.contains("balanced, performance"), "{}", out.text);
+        assert_eq!(out.exit_code, 2);
+    }
+
+    #[test]
+    fn acer_profile_set_unavailable_names_predator_v4_and_exits_3() {
+        // Distinguishes this from the OS-level command's wording: the fix
+        // for this specific error is loading acer_wmi with predator_v4=1,
+        // not "start power-profiles-daemon".
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::BackendUnavailable),
+            ..Default::default()
+        };
+
+        let out = run_acer_profile_set(&provider, "quiet");
+
+        assert!(out.text.contains("predator_v4=1"), "{}", out.text);
+        assert_eq!(out.exit_code, 3);
+    }
+
+    #[test]
+    fn acer_profile_set_denied_names_the_privilege_gap_and_exits_3() {
+        // Distinguishes this from the OS-level command: FR-005's D-Bus
+        // write needs no privilege (verified M3); this sysfs write does,
+        // per FR-007's design -- the message should say so, not just
+        // "denied" with no actionable next step.
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::BackendDenied),
+            ..Default::default()
+        };
+
+        let out = run_acer_profile_set(&provider, "quiet");
+
+        assert!(out.text.contains("root"), "{}", out.text);
+        assert_eq!(out.exit_code, 3);
+    }
+
+    #[test]
+    fn acer_profile_set_backend_failure_reports_the_real_eio_and_exits_3() {
+        // SAFE-004: the performance-write EIO (docs/hardware.md M5) is
+        // reported verbatim, never silently treated as success.
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::BackendFailed(
+                "Input/output error (os error 5)".to_string(),
+            )),
+            ..Default::default()
+        };
+
+        let out = run_acer_profile_set(&provider, "performance");
+
+        assert!(
+            out.text.contains("Input/output error (os error 5)"),
+            "{}",
+            out.text
+        );
         assert_eq!(out.exit_code, 3);
     }
 }
