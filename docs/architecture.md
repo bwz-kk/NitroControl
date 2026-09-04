@@ -3,7 +3,7 @@
 ## Layering
 
 ```
-CLI (clap)                 GUI (GTK4 + libadwaita, Milestone 4+)
+CLI (clap)                 GUI (GTK4 + libadwaita)
         \                         /
          nitroctl-dbus (shared capability/state proxy)
                         |
@@ -23,7 +23,7 @@ Hardware-specific logic never appears above the Hardware Abstraction layer. Neit
 - **`nitroctl-core`** — the abstraction, providers, and typed sensor/state model. No UI dependency.
 - **`nitroctl-dbus`** — shared proxy crate exposing `CapabilityState` over D-Bus to both frontends, so the CLI and GUI never re-derive support state independently. Pattern taken from `asusctl`'s `rog-dbus` crate (prior art, see below).
 - **`nitroctl-cli`** — `clap`-based binary, depends on `nitroctl-core` (directly, or via `nitroctl-dbus` once the daemon exists).
-- **`nitroctl-gui`** — GTK4/libadwaita binary (Milestone 4+), depends on the same shared layer.
+- **`nitroctl-gui`** — GTK4/libadwaita binary (M4, done), depends on the same shared layer.
 
 **Resolved for M3** (was an open decision): M3's `profile set` needs no privilege-separation scheme of our own — verified live (`hardware.md`) that `power-profiles-daemon`'s own D-Bus policy is `context="default"` (any user, no polkit) for the whole interface including writes, matching `asusctl`'s model rather than `system76-power`'s. NitroControl is purely a client of PPD's already-permissive bus policy here. The polkit-vs-dbus-policy question is only still open for a **future NitroControl-owned privileged daemon** (M5+ fan/thermal control via `predator_v4`) — that daemon doesn't exist yet, so nothing to decide until then.
 
@@ -38,7 +38,10 @@ enum CapabilityState<T> {
     HardwareDependent(T),
 }
 
-trait SensorProvider {
+// Send + Sync: a long-lived instance can be shared (Arc) with a background
+// polling thread — the GUI (M4) needs this, since e.g. cpu_utilization()'s
+// rate calculation only works across two calls on the *same* instance.
+trait SensorProvider: Send + Sync {
     fn cpu_temperature(&self) -> CapabilityState<Celsius>;
     fn gpu_temperature(&self, gpu: GpuKind) -> CapabilityState<Celsius>;
     fn cpu_utilization(&self) -> CapabilityState<Percent>;
@@ -49,10 +52,10 @@ trait SensorProvider {
     fn fan_rpm(&self) -> CapabilityState<Vec<Rpm>>;
 }
 
-trait PowerProfileProvider {
-    fn list_profiles(&self) -> CapabilityState<Vec<ProfileName>>;
-    fn current_profile(&self) -> CapabilityState<ProfileName>;
-    fn set_profile(&self, profile: ProfileName) -> Result<(), ProfileError>;
+trait PowerProfileProvider: Send + Sync {
+    fn list_profiles(&self) -> CapabilityState<Vec<String>>;
+    fn current_profile(&self) -> CapabilityState<ProfileStatus>;
+    fn set_profile(&self, profile: &str) -> Result<(), ProfileError>;
 }
 ```
 
@@ -101,3 +104,4 @@ Any future control feature (fan curve, keyboard lighting, etc.) that actively ho
 - **[power-profiles-daemon](https://gitlab.freedesktop.org/upower/power-profiles-daemon)** (upstream) — source of the real D-Bus contract used in FR-005/M3, and of the "placeholder backend" behavior now reflected in our `CapabilityState` mapping.
 - **[LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux)** — source of the dual-threshold-hysteresis + minimum-PWM-floor fan-curve design to reuse if fan-curve control is ever implemented (M5+).
 - **[fw-fanctrl](https://github.com/TamtamHero/fw-fanctrl)** — source of SAFE-005's fail-safe-to-firmware-default pattern.
+- **[LACT](https://github.com/ilya-zlobintsev/LACT)** (Rust) — GPU fan-curve/clock/power-limit control for AMD (full) and NVIDIA (via NVML, since v0.6.0). Confirms the `asusctl`-style daemon+socket+systemd architecture at a second, independent project: `lactd` runs as root behind a Unix socket gated by group/user config, no polkit. Also confirms this project's own hwmon finding independently — LACT's own docs warn fan control may be unavailable "on laptops where the fan isn't wired through the GPU," same failure mode as this machine's absent fan hwmon. **Explicitly a weaker SAFE-005 example, not a stronger one**: LACT has a provisional-apply/confirm timer (a bad config auto-reverts after 5s) but no watchdog restoring safe state if `lactd` itself crashes mid-curve (open, unresolved: [issue #359](https://github.com/ilya-zlobintsev/LACT/issues/359)) — `fw-fanctrl` remains the pattern to copy for SAFE-005, LACT is cited here only for the daemon/socket/systemd shape.

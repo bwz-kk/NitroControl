@@ -1,0 +1,15 @@
+[package]
+name = "nitroctl-gui"
+version = "0.1.0"
+edition = "2021"
+description = "GTK4 + libadwaita GUI for NitroControl"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "nitroctl-gui"
+path = "src/main.rs"
+
+[dependencies]
+nitroctl-core = { path = "../nitroctl-core" }
+gtk4 = "0.11"
+libadwaita = { version = "0.9", features = ["v1_4"] }

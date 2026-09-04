@@ -39,12 +39,14 @@ Folded in findings from two web-research passes (Acer-specific ecosystem: `linuw
 - 91/91 workspace tests pass (22 new in `nitroctl-cli`, 12 new + a design-fix regression pass in `nitroctl-core`), clippy/fmt clean.
 - Built on branch `m3-power-profiles`, per the new branch+PR workflow.
 
-## M4 — GUI (`nitroctl-gui`, GTK4 + libadwaita)
+## M4 — GUI (`nitroctl-gui`, GTK4 + libadwaita) — done 2026-09-03
 
-- Dashboard: System → CPU, GPU, Memory, Temperatures, Fans, Battery, Power Profile — mirroring `spec.md`'s FR set.
-- GUI contains no direct `/sys`/D-Bus/NVML calls — consumes `nitroctl-core` only.
-- Unavailable/unsupported states rendered clearly and distinctly from real values (per SAFE/FR-004 conventions).
-- Verification: visually compare each displayed value against the CLI's output for the same metric at the same moment.
+- Dashboard implemented: `adw::PreferencesPage` grouped into CPU, GPU, Memory, Battery, Fans, Power Profile — mirroring `spec.md`'s FR set. `format.rs` holds pure, TDD'd rendering logic (12 tests); `window.rs` is the only file touching `nitroctl-core`, per architecture.md's layering.
+- Unavailable/unsupported/hardware-dependent states rendered as explicit text and styled with the `dim-label` CSS class, distinct from real values (per SAFE/FR-004 conventions) — confirmed visually (Fan RPM correctly shows "unavailable" on this hardware).
+- **Design fix found via real verification, not caught by unit tests**: the first working build rebuilt a fresh `SensorProvider`/`PowerProfileProvider` every poll tick (mirroring how the CLI does it once per invocation) — but `GenericLinux::cpu_utilization()`'s rate calculation needs state to persist *across* calls on the same instance, so this meant CPU Utilization read "unknown" forever, on every tick, not just the first one (worse than the CLI's M2 bug, since the GUI polls repeatedly). Screenshotted proof of the bug, then fixed by adding `Send + Sync` supertraits to `SensorProvider`/`PowerProfileProvider` (mirroring `PowerProfilesBackend`'s existing bound) and building both providers **once**, shared via `Arc` across every poll — reconnecting/reconstructing costs are paid once at startup, not per tick. Re-verified with a second screenshot: CPU Utilization showed a real percentage.
+- Threading model: every poll's actual sensor/D-Bus reads run via `gio::spawn_blocking` on a worker thread, results applied to widgets via `glib::MainContext::spawn_local` back on the main thread — the GTK main thread is never blocked, per NFR-002. No new async runtime dependency; uses glib's own executor (already transitive via gtk4-rs).
+- 105/105 workspace tests pass (12 new in `nitroctl-gui`), clippy/fmt clean.
+- Verification: launched the real GUI on the target machine (Hyprland/Wayland), screenshotted it (`grim`, installed for this purpose), and visually compared every displayed value against `nitroctl status`/`sensors` output captured at the same moment — RAM matched exactly, battery matched exactly, temperatures within normal sensor-to-sensor drift, CPU/dGPU utilization matched, iGPU utilization correctly showed "unknown" on both (path unconfirmed per hardware.md).
 
 ## M5+ — Re-evaluate currently-unsupported capabilities
 
