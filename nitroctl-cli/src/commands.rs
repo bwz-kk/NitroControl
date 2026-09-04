@@ -348,16 +348,11 @@ pub fn run_acer_profile_set(provider: &dyn PowerProfileProvider, name: &str) -> 
             exit_code: 2,
         },
         Err(ProfileError::BackendUnavailable) => CommandOutput {
-            text: "Acer firmware power-profile interface is not available \
-                   (requires acer_wmi to be loaded with predator_v4=1 -- see docs/hardware.md)"
-                .to_string(),
+            text: "Acer firmware power-profile interface is not available (requires acer_wmi to be loaded with predator_v4=1 -- see docs/hardware.md)".to_string(),
             exit_code: 3,
         },
         Err(ProfileError::BackendDenied) => CommandOutput {
-            text: "Acer firmware power-profile write was denied -- this needs root, \
-                   or a udev rule relaxing permission on \
-                   /sys/firmware/acpi/platform_profile (see docs/architecture.md)"
-                .to_string(),
+            text: "Acer firmware power-profile write was denied -- this needs root, or a udev rule relaxing permission on /sys/firmware/acpi/platform_profile (see docs/architecture.md)".to_string(),
             exit_code: 3,
         },
         Err(ProfileError::BackendFailed(message)) => CommandOutput {
