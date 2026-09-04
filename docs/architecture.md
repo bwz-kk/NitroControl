@@ -53,9 +53,9 @@ trait SensorProvider: Send + Sync {
 }
 
 trait PowerProfileProvider: Send + Sync {
-    fn list_profiles(&self) -> CapabilityState<Vec<ProfileName>>;
-    fn current_profile(&self) -> CapabilityState<ProfileName>;
-    fn set_profile(&self, profile: ProfileName) -> Result<(), ProfileError>;
+    fn list_profiles(&self) -> CapabilityState<Vec<String>>;
+    fn current_profile(&self) -> CapabilityState<ProfileStatus>;
+    fn set_profile(&self, profile: &str) -> Result<(), ProfileError>;
 }
 ```
 

@@ -17,6 +17,7 @@
 //! on a `gio::spawn_blocking` worker thread, never the GTK main thread,
 //! per NFR-002.
 
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -223,19 +224,39 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let sensors = build_sensor_provider();
     let profile_provider = build_profile_provider();
 
+    // Guards against overlapping poll ticks: if a snapshot is still running
+    // (e.g. a slow D-Bus call) when the next timer tick fires, that tick is
+    // skipped rather than spawning a second worker task racing the first.
+    let poll_in_flight = Rc::new(Cell::new(false));
+
     let poll = {
         let dashboard = dashboard.clone();
+        let poll_in_flight = poll_in_flight.clone();
         move || {
+            if poll_in_flight.get() {
+                return;
+            }
+            poll_in_flight.set(true);
+
             let dashboard = dashboard.clone();
             let sensors = sensors.clone();
             let profile_provider = profile_provider.clone();
+            let poll_in_flight = poll_in_flight.clone();
             glib::MainContext::default().spawn_local(async move {
-                let snapshot = gio::spawn_blocking(move || {
+                let result = gio::spawn_blocking(move || {
                     take_snapshot(sensors.as_ref(), profile_provider.as_ref())
                 })
-                .await
-                .expect("snapshot worker thread panicked");
-                dashboard.apply(&snapshot);
+                .await;
+                poll_in_flight.set(false);
+                match result {
+                    Ok(snapshot) => dashboard.apply(&snapshot),
+                    Err(e) => {
+                        // Worker thread panicked (or the task was cancelled).
+                        // Never crash the GUI over a single bad poll tick —
+                        // just skip this update and try again next tick.
+                        eprintln!("nitroctl-gui: snapshot poll failed: {e:?}");
+                    }
+                }
             });
         }
     };
