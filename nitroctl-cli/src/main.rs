@@ -1,9 +1,11 @@
 use clap::{Parser, Subcommand};
 use nitroctl_cli::commands::{
     run_acer_profile_get, run_acer_profile_list, run_acer_profile_set, run_battery,
-    run_battery_limit_get, run_battery_limit_set, run_diagnose, run_fans, run_profile_get,
-    run_profile_list, run_profile_set, run_sensors, run_status, CommandOutput,
+    run_battery_calibrate_get, run_battery_calibrate_set, run_battery_limit_get,
+    run_battery_limit_set, run_diagnose, run_fans, run_profile_get, run_profile_list,
+    run_profile_set, run_sensors, run_status, CommandOutput,
 };
+use nitroctl_core::battery_calibration::BatteryCalibrationProvider;
 use nitroctl_core::battery_limit::AcerWmiBatteryBackend;
 use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
@@ -45,6 +47,12 @@ enum Command {
     /// module is built and loaded (see docs/optional-setup.md).
     #[command(subcommand)]
     BatteryLimit(BatteryLimitCommand),
+    /// Battery calibration mode (M7, FR-009) via the same out-of-tree
+    /// driver's calibration_mode -- a multi-hour discharge/recharge cycle,
+    /// not a persistent setting (see docs/architecture.md's M7 design
+    /// section). `set on` starts it; the driver never signals completion.
+    #[command(subcommand)]
+    BatteryCalibrate(BatteryCalibrateCommand),
     /// Capability matrix + evidence, for GitHub bug reports.
     Diagnose,
 }
@@ -64,6 +72,17 @@ enum BatteryLimitCommand {
     /// Show whether the battery charge limit (health mode) is on.
     Get,
     /// Turn the battery charge limit on or off ("on" or "off").
+    Set { state: String },
+}
+
+#[derive(Subcommand)]
+enum BatteryCalibrateCommand {
+    /// Show whether calibration mode is currently running.
+    Get,
+    /// Start or stop a calibration cycle ("on" or "off"). Starting one
+    /// disables the charge limit and begins a multi-hour discharge/recharge
+    /// cycle the driver won't tell you the end of -- see the `set on`
+    /// output for the full caution.
     Set { state: String },
 }
 
@@ -120,6 +139,29 @@ fn main() {
                 BatteryLimitCommand::Set { state } => match state.as_str() {
                     "on" => run_battery_limit_set(&battery_limit_provider, true),
                     "off" => run_battery_limit_set(&battery_limit_provider, false),
+                    other => CommandOutput {
+                        text: format!("Invalid state {other:?}; valid choices: on, off"),
+                        exit_code: 2,
+                    },
+                },
+            }
+        }
+        Command::BatteryCalibrate(battery_calibrate_command) => {
+            // Same AcerWmiBatteryBackend type as BatteryLimit above -- one
+            // physical driver instance implements both traits (see
+            // battery_calibration's doc comment) -- just a fresh instance
+            // per invocation like the rest of this CLI's providers.
+            let battery_calibration_provider: Box<dyn BatteryCalibrationProvider> =
+                Box::new(AcerWmiBatteryBackend::new(RealSysfsReader));
+            match battery_calibrate_command {
+                BatteryCalibrateCommand::Get => {
+                    run_battery_calibrate_get(battery_calibration_provider.as_ref())
+                }
+                BatteryCalibrateCommand::Set { state } => match state.as_str() {
+                    "on" => run_battery_calibrate_set(battery_calibration_provider.as_ref(), true),
+                    "off" => {
+                        run_battery_calibrate_set(battery_calibration_provider.as_ref(), false)
+                    }
                     other => CommandOutput {
                         text: format!("Invalid state {other:?}; valid choices: on, off"),
                         exit_code: 2,

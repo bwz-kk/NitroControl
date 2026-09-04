@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use nitroctl_core::battery_calibration::{BatteryCalibrationProvider, CalibrationError};
 use nitroctl_core::battery_limit::{BatteryLimitError, BatteryLimitProvider};
 use nitroctl_core::capability::CapabilityState;
 use nitroctl_core::power_profile::{PowerProfileProvider, ProfileError, ProfileStatus};
@@ -410,6 +411,70 @@ pub fn run_battery_limit_set(provider: &dyn BatteryLimitProvider, enabled: bool)
         },
         Err(BatteryLimitError::Failed(message)) => CommandOutput {
             text: format!("Battery charge limit write failed: {message}"),
+            exit_code: 3,
+        },
+    }
+}
+
+// ---- battery-calibrate (M7, FR-009) ----
+// Same driver as battery-limit above (bwz-kk/acer-wmi-battery), a separate
+// attribute (calibration_mode) and a separate BatteryCalibrationProvider
+// trait -- see docs/architecture.md's M7 design section for why this isn't
+// folded into battery-limit. `set on`'s success message carries an explicit
+// caution the other toggles don't need: this starts a real, multi-hour
+// hardware operation the driver never signals the end of.
+
+fn format_calibration_mode(enabled: &bool) -> String {
+    if *enabled {
+        "on".to_string()
+    } else {
+        "off".to_string()
+    }
+}
+
+pub fn run_battery_calibrate_get(provider: &dyn BatteryCalibrationProvider) -> CommandOutput {
+    let state = provider.calibration_mode();
+    let (value, exit_code) = describe(&state, format_calibration_mode);
+    CommandOutput {
+        text: format!("Battery calibration mode: {value}"),
+        exit_code,
+    }
+}
+
+pub fn run_battery_calibrate_set(
+    provider: &dyn BatteryCalibrationProvider,
+    enabled: bool,
+) -> CommandOutput {
+    match provider.set_calibration_mode(enabled) {
+        Ok(()) if enabled => CommandOutput {
+            text: "Battery calibration mode turned on -- this starts a multi-hour \
+                   discharge/recharge cycle and disables the charge limit while it \
+                   runs. The driver does not signal completion: check back yourself \
+                   and run `nitroctl battery-calibrate set off` when it's done."
+                .to_string(),
+            exit_code: 0,
+        },
+        Ok(()) => CommandOutput {
+            text: "Battery calibration mode turned off".to_string(),
+            exit_code: 0,
+        },
+        Err(CalibrationError::Unavailable) => CommandOutput {
+            text: "Battery calibration mode interface is not available -- requires the \
+                   bwz-kk/acer-wmi-battery driver to be built and loaded \
+                   (see docs/optional-setup.md)"
+                .to_string(),
+            exit_code: 3,
+        },
+        Err(CalibrationError::Denied) => CommandOutput {
+            text: "Battery calibration mode write was denied -- this needs root, \
+                   or a udev rule relaxing permission on \
+                   /sys/bus/wmi/drivers/acer-wmi-battery/calibration_mode \
+                   (see docs/optional-setup.md)"
+                .to_string(),
+            exit_code: 3,
+        },
+        Err(CalibrationError::Failed(message)) => CommandOutput {
+            text: format!("Battery calibration mode write failed: {message}"),
             exit_code: 3,
         },
     }
@@ -1159,6 +1224,152 @@ mod tests {
         };
 
         let out = run_battery_limit_set(&provider, true);
+
+        assert!(
+            out.text.contains("Input/output error (os error 5)"),
+            "{}",
+            out.text
+        );
+        assert_eq!(out.exit_code, 3);
+    }
+
+    // ---- run_battery_calibrate_get / _set (M7, FR-009) ----
+
+    struct FakeBatteryCalibrationProvider {
+        calibration_mode: CapabilityState<bool>,
+        set_result: Result<(), CalibrationError>,
+    }
+
+    impl Default for FakeBatteryCalibrationProvider {
+        fn default() -> Self {
+            Self {
+                calibration_mode: CapabilityState::Unsupported,
+                set_result: Ok(()),
+            }
+        }
+    }
+
+    impl BatteryCalibrationProvider for FakeBatteryCalibrationProvider {
+        fn calibration_mode(&self) -> CapabilityState<bool> {
+            self.calibration_mode.clone()
+        }
+        fn set_calibration_mode(&self, _enabled: bool) -> Result<(), CalibrationError> {
+            self.set_result.clone()
+        }
+    }
+
+    #[test]
+    fn battery_calibrate_get_prints_on_when_enabled() {
+        let provider = FakeBatteryCalibrationProvider {
+            calibration_mode: CapabilityState::Supported(true),
+            ..Default::default()
+        };
+
+        let out = run_battery_calibrate_get(&provider);
+
+        assert_eq!(out.text, "Battery calibration mode: on");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn battery_calibrate_get_prints_off_when_disabled() {
+        let provider = FakeBatteryCalibrationProvider {
+            calibration_mode: CapabilityState::Supported(false),
+            ..Default::default()
+        };
+
+        let out = run_battery_calibrate_get(&provider);
+
+        assert_eq!(out.text, "Battery calibration mode: off");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn battery_calibrate_get_unavailable_by_default_driver_not_loaded() {
+        let provider = FakeBatteryCalibrationProvider::default();
+
+        let out = run_battery_calibrate_get(&provider);
+
+        assert_eq!(out.text, "Battery calibration mode: unavailable");
+        assert_eq!(out.exit_code, 1);
+    }
+
+    #[test]
+    fn battery_calibrate_set_on_warns_about_the_multi_hour_cycle_and_exits_0() {
+        // Distinguishes this from battery-limit's plain confirmation: `set
+        // on` here starts a real hardware operation the driver never
+        // signals completion for, so the message must say so, not just
+        // "turned on" (docs/architecture.md's M7 design section).
+        let provider = FakeBatteryCalibrationProvider {
+            set_result: Ok(()),
+            ..Default::default()
+        };
+
+        let out = run_battery_calibrate_set(&provider, true);
+
+        assert!(out.text.contains("multi-hour"), "{}", out.text);
+        assert!(
+            out.text.contains("does not signal completion"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("battery-calibrate set off"),
+            "{}",
+            out.text
+        );
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn battery_calibrate_set_off_prints_a_plain_confirmation() {
+        let provider = FakeBatteryCalibrationProvider {
+            set_result: Ok(()),
+            ..Default::default()
+        };
+
+        let out = run_battery_calibrate_set(&provider, false);
+
+        assert_eq!(out.text, "Battery calibration mode turned off");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn battery_calibrate_set_unavailable_names_the_driver_and_exits_3() {
+        let provider = FakeBatteryCalibrationProvider {
+            set_result: Err(CalibrationError::Unavailable),
+            ..Default::default()
+        };
+
+        let out = run_battery_calibrate_set(&provider, true);
+
+        assert!(out.text.contains("acer-wmi-battery"), "{}", out.text);
+        assert_eq!(out.exit_code, 3);
+    }
+
+    #[test]
+    fn battery_calibrate_set_denied_names_the_privilege_gap_and_exits_3() {
+        let provider = FakeBatteryCalibrationProvider {
+            set_result: Err(CalibrationError::Denied),
+            ..Default::default()
+        };
+
+        let out = run_battery_calibrate_set(&provider, true);
+
+        assert!(out.text.contains("root"), "{}", out.text);
+        assert_eq!(out.exit_code, 3);
+    }
+
+    #[test]
+    fn battery_calibrate_set_backend_failure_reports_verbatim_and_exits_3() {
+        let provider = FakeBatteryCalibrationProvider {
+            set_result: Err(CalibrationError::Failed(
+                "Input/output error (os error 5)".to_string(),
+            )),
+            ..Default::default()
+        };
+
+        let out = run_battery_calibrate_set(&provider, true);
 
         assert!(
             out.text.contains("Input/output error (os error 5)"),
