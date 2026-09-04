@@ -94,7 +94,11 @@ Roadmap's M5+ battery-limit item resolved: **adopt now**, via a maintained fork,
 
 Rejected/deferred: waiting for the in-tree `platform-driver-x86` submission ([LWN #1055804](https://lwn.net/Articles/1055804/)) — still under mailing-list review as of this pass, no ETA, not present in this machine's kernel. Will switch to it (and archive the fork) once/if it merges.
 
-Implementation (TDD) not yet started by this SPECIFY pass.
+**Implementation (FR-008): done 2026-09-04.** TDD throughout (PR #8, `battery_limit` module in `nitroctl-core`; `nitroctl battery-limit get|set on|off` in `nitroctl-cli`; a read-only GUI row): 18 new tests (8 core, 8 CLI, 2 GUI format), 147/147 workspace tests, clippy/fmt clean.
+
+**Live verification: done 2026-09-04, with explicit user consent.** Fork built (`make LLVM=1`, this machine's kernel), loaded, and driven through the real `nitroctl` binary — default state, unprivileged read, unprivileged write correctly denied, privileged write confirmed via `dmesg` + readback, restore-and-unload confirmed. Full sequence in `hardware.md`'s "M6/FR-008 implementation — live verification" section. Permission bits confirmed live (root-owned, no group/other write) rather than assumed from FR-007's precedent.
+
+**Not yet done**: persistent module-load config and a udev rule for unprivileged writes (FR-007's M5 got both; M6 stopped at live verification this pass) — a separate decision, not made yet. `docs/optional-setup.md` has no battery-limit section until that happens.
 
 ## M5+ — remaining re-evaluation items
 

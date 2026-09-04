@@ -118,6 +118,14 @@ pub fn profile_status_row(state: &CapabilityState<ProfileStatus>) -> RowContent 
     describe(state, profile_status)
 }
 
+pub fn battery_limit(enabled: &bool) -> String {
+    if *enabled { "on" } else { "off" }.to_string()
+}
+
+pub fn battery_limit_row(state: &CapabilityState<bool>) -> RowContent {
+    describe(state, battery_limit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +240,15 @@ mod tests {
             hardware_backed: true,
         };
         assert_eq!(profile_status(&status), "balanced");
+    }
+
+    #[test]
+    fn formats_battery_limit_on() {
+        assert_eq!(battery_limit(&true), "on");
+    }
+
+    #[test]
+    fn formats_battery_limit_off() {
+        assert_eq!(battery_limit(&false), "off");
     }
 }
