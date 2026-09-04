@@ -110,7 +110,11 @@ Roadmap's M6 decision-3 deferral resolved: scoping `calibration_mode` as its own
 - **Separate `BatteryCalibrationProvider` trait + `nitroctl battery-calibrate get|set` command**, not folded into M6's `BatteryLimitProvider`/`battery-limit` — same sysfs mechanics, but `set` here starts a many-hour operation with a real side effect (disables `health_mode`) rather than changing a persistent setting, so conflating the two would misrepresent what `set` does.
 - **GUI: read-only status row, no write toggle** — a dashboard switch invites an accidental click on a 12+-hour, no-abort-signal operation; `set` stays CLI-only.
 
-Implementation (TDD, its own branch+PR) is next.
+**Implementation (FR-009): done 2026-09-04.** TDD throughout (`battery_calibration` module in `nitroctl-core`; `nitroctl battery-calibrate get|set on|off` in `nitroctl-cli`, `set on` carrying an explicit multi-hour-operation caution; a read-only GUI row, no write control): 19 new tests, 166/166 workspace tests, clippy/fmt clean.
+
+**Live verification (toggle-only, per this milestone's narrower evidence standard): done 2026-09-04, with explicit user consent.** Write→dmesg-confirm→readback→immediate-disable through the real `nitroctl` binary, on the already-loaded M6 module (no rebuild needed). Full sequence in `hardware.md`'s "M7/FR-009 implementation" section. Surfaced a real finding not documented in any community write-up consulted during SPECIFY: disabling `calibration_mode` doesn't just stop it — the EC automatically **re-enables `health_mode`** as a side effect (confirmed via `dmesg`, both directions). As designed, this run does **not** establish that a full multi-hour discharge/recharge cycle completes correctly on this hardware — that stays an open gap, same one the in-tree submission's author hit on their own unit.
+
+M7 is now fully closed out to its deliberately narrower scope: design, implementation, and toggle-only live verification. No persistent udev-rule work planned for this one by default — `calibration_mode` stays root-only unless a user separately decides to relax it (not done automatically, same SAFE-001/002 stance).
 
 ## M5+ — remaining re-evaluation items
 
