@@ -102,6 +102,20 @@ Rejected/deferred: waiting for the in-tree `platform-driver-x86` submission ([LW
 
 M6 is now fully closed out end to end: design, implementation, live verification, and daily-use persistence.
 
+## M7 — Battery calibration mode (FR-009) — scoped 2026-09-04
+
+Roadmap's M6 decision-3 deferral resolved: scoping `calibration_mode` as its own milestone, same driver as M6 (`bwz-kk/acer-wmi-battery`, no new out-of-tree dependency), but a deliberately different risk treatment. Full design rationale in `architecture.md`'s new "Battery calibration mode (M7, FR-009)" section; FR-009 added to `spec.md`. Two decisions made, reviewed with the user before writing any code:
+
+- **Verification is toggle-only** — write→readback→immediate-disable, not a real 12+-hour discharge/recharge cycle. Researched before scoping: the driver's own docs say enabling `calibration_mode` disables `health_mode`, charges to 100%, then does one full discharge and recharge, with no completion signal (the user must notice and disable it manually). Real evidence this is riskier than `health_mode`: the in-tree submission author dropped this exact attribute after it "did not work as expected" on their own test unit ([LWN #1055804](https://lwn.net/Articles/1055804/)). `hardware.md` will record this milestone's evidence standard as explicitly narrower than FR-007/FR-008's — proving the attribute responds, not that a full cycle completes correctly on this hardware.
+- **Separate `BatteryCalibrationProvider` trait + `nitroctl battery-calibrate get|set` command**, not folded into M6's `BatteryLimitProvider`/`battery-limit` — same sysfs mechanics, but `set` here starts a many-hour operation with a real side effect (disables `health_mode`) rather than changing a persistent setting, so conflating the two would misrepresent what `set` does.
+- **GUI: read-only status row, no write toggle** — a dashboard switch invites an accidental click on a 12+-hour, no-abort-signal operation; `set` stays CLI-only.
+
+**Implementation (FR-009): done 2026-09-04.** TDD throughout (`battery_calibration` module in `nitroctl-core`; `nitroctl battery-calibrate get|set on|off` in `nitroctl-cli`, `set on` carrying an explicit multi-hour-operation caution; a read-only GUI row, no write control): 19 new tests, 166/166 workspace tests, clippy/fmt clean.
+
+**Live verification (toggle-only, per this milestone's narrower evidence standard): done 2026-09-04, with explicit user consent.** Write→dmesg-confirm→readback→immediate-disable through the real `nitroctl` binary, on the already-loaded M6 module (no rebuild needed). Full sequence in `hardware.md`'s "M7/FR-009 implementation" section. Surfaced a real finding not documented in any community write-up consulted during SPECIFY: disabling `calibration_mode` doesn't just stop it — the EC automatically **re-enables `health_mode`** as a side effect (confirmed via `dmesg`, both directions). As designed, this run does **not** establish that a full multi-hour discharge/recharge cycle completes correctly on this hardware — that stays an open gap, same one the in-tree submission's author hit on their own unit.
+
+M7 is now fully closed out to its deliberately narrower scope: design, implementation, and toggle-only live verification. No persistent udev-rule work planned for this one by default — `calibration_mode` stays root-only unless a user separately decides to relax it (not done automatically, same SAFE-001/002 stance).
+
 ## M5+ — remaining re-evaluation items
 
 - **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.

@@ -126,6 +126,19 @@ pub fn battery_limit_row(state: &CapabilityState<bool>) -> RowContent {
     describe(state, battery_limit)
 }
 
+/// Same `on`/`off` shape as `battery_limit` -- deliberately no write
+/// control on this row's GUI side (docs/architecture.md's M7 design
+/// section): a dashboard switch invites an accidental click on a
+/// multi-hour, no-abort-signal operation, so `battery-calibrate set` stays
+/// CLI-only. This row is read-only status, same as the profile rows.
+pub fn battery_calibration(enabled: &bool) -> String {
+    if *enabled { "on" } else { "off" }.to_string()
+}
+
+pub fn battery_calibration_row(state: &CapabilityState<bool>) -> RowContent {
+    describe(state, battery_calibration)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +263,15 @@ mod tests {
     #[test]
     fn formats_battery_limit_off() {
         assert_eq!(battery_limit(&false), "off");
+    }
+
+    #[test]
+    fn formats_battery_calibration_on() {
+        assert_eq!(battery_calibration(&true), "on");
+    }
+
+    #[test]
+    fn formats_battery_calibration_off() {
+        assert_eq!(battery_calibration(&false), "off");
     }
 }

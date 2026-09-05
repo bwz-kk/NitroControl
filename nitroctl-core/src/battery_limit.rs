@@ -79,6 +79,14 @@ impl<R: SysfsReader> AcerWmiBatteryBackend<R> {
     pub fn new(sysfs: R) -> Self {
         Self { sysfs }
     }
+
+    /// Crate-internal accessor so `battery_calibration` (same physical
+    /// driver instance, a different sysfs attribute) can implement
+    /// `BatteryCalibrationProvider` for this struct without a second,
+    /// duplicate backend type.
+    pub(crate) fn sysfs(&self) -> &R {
+        &self.sysfs
+    }
 }
 
 impl<R: SysfsReader> BatteryLimitProvider for AcerWmiBatteryBackend<R> {
