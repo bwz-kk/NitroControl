@@ -211,8 +211,17 @@ mod tests {
 
     #[test]
     fn health_mode_and_calibration_mode_are_independent_on_the_same_backend() {
-        // One physical driver instance, two attributes -- writing one must
-        // not disturb the other's state as seen through this struct.
+        // Software-layer scope only: this asserts that OUR write path
+        // touches exactly the attribute it's told to, using a
+        // MockSysfsReader that has no firmware model at all -- it makes no
+        // claim about the real EC. On real hardware, the EC itself DOES
+        // change health_mode as a side effect of a calibration_mode write
+        // (docs/hardware.md's M7 live-verification section) -- that's a
+        // firmware behavior outside this struct's control, and
+        // health_mode() already reports it correctly on real hardware
+        // because it re-reads sysfs fresh every call rather than caching.
+        // Simulating that side effect in the mock would wrongly imply it's
+        // this code's responsibility to reproduce it.
         use crate::battery_limit::BatteryLimitProvider;
 
         let sysfs = MockSysfsReader::new();
