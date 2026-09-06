@@ -9,6 +9,7 @@ use std::time::Duration;
 use nitroctl_core::battery_calibration::{BatteryCalibrationProvider, CalibrationError};
 use nitroctl_core::battery_limit::{BatteryLimitError, BatteryLimitProvider};
 use nitroctl_core::capability::CapabilityState;
+use nitroctl_core::evidence::{Evidence, EvidenceProvider};
 use nitroctl_core::power_profile::{PowerProfileProvider, ProfileError, ProfileStatus};
 use nitroctl_core::sensor::{GpuKind, MemoryUsage, Percent, Rpm, SensorProvider};
 
@@ -18,7 +19,7 @@ use nitroctl_core::sensor::{GpuKind, MemoryUsage, Percent, Rpm, SensorProvider};
 /// blocking event loop — gets a real reading instead of always "unknown".
 const CPU_UTILIZATION_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 
-fn sampled_cpu_utilization(provider: &dyn SensorProvider) -> CapabilityState<Percent> {
+fn sampled_cpu_utilization<P: SensorProvider + ?Sized>(provider: &P) -> CapabilityState<Percent> {
     let first = provider.cpu_utilization();
     if matches!(first, CapabilityState::Supported(_)) {
         return first;
@@ -182,10 +183,10 @@ pub fn run_fans(provider: &dyn SensorProvider) -> CommandOutput {
     }
 }
 
-pub fn run_diagnose(provider: &dyn SensorProvider) -> CommandOutput {
+pub fn run_diagnose(provider: &dyn EvidenceProvider) -> CommandOutput {
     let mut lines = vec!["NitroControl diagnostic report".to_string()];
 
-    let mut labeled = |label: &str, value: String, state_word: &str| {
+    let mut labeled = |label: &str, value: String, state_word: &str, evidence: Option<Evidence>| {
         // SUPPORTED and HARDWARE_DEPENDENT both carry a real value; the
         // other three states don't, so there's nothing to show alongside
         // the state word for them.
@@ -194,6 +195,16 @@ pub fn run_diagnose(provider: &dyn SensorProvider) -> CommandOutput {
         } else {
             lines.push(format!("{label}: {state_word}"));
         }
+        // Per FR-006: raw evidence (paths/values), redacted where the
+        // provider's evidence method already redacted it (battery serial
+        // number). Only printed when there's a path/command to point at —
+        // Unsupported metrics have nothing to show evidence for.
+        if let Some(Evidence { source, raw_value }) = evidence {
+            match raw_value {
+                Some(raw) => lines.push(format!("  evidence: {source} = {raw}")),
+                None => lines.push(format!("  evidence: {source}")),
+            }
+        }
     };
 
     let cpu_temp = provider.cpu_temperature();
@@ -201,56 +212,70 @@ pub fn run_diagnose(provider: &dyn SensorProvider) -> CommandOutput {
         "CPU temperature",
         describe(&cpu_temp, format_celsius).0,
         state_label(&cpu_temp),
+        provider.cpu_temperature_evidence(),
     );
     let igpu_temp = provider.gpu_temperature(GpuKind::Integrated);
     labeled(
         "iGPU temperature",
         describe(&igpu_temp, format_celsius).0,
         state_label(&igpu_temp),
+        provider.gpu_temperature_evidence(GpuKind::Integrated),
     );
     let dgpu_temp = provider.gpu_temperature(GpuKind::Discrete);
     labeled(
         "dGPU temperature",
         describe(&dgpu_temp, format_celsius).0,
         state_label(&dgpu_temp),
+        provider.gpu_temperature_evidence(GpuKind::Discrete),
     );
     let cpu_freq = provider.cpu_frequency();
     labeled(
         "CPU frequency",
         describe(&cpu_freq, format_megahertz).0,
         state_label(&cpu_freq),
+        provider.cpu_frequency_evidence(),
     );
     let cpu_util = sampled_cpu_utilization(provider);
     labeled(
         "CPU utilization",
         describe(&cpu_util, format_percent).0,
         state_label(&cpu_util),
+        provider.cpu_utilization_evidence(),
     );
     let igpu_util = provider.gpu_utilization(GpuKind::Integrated);
     labeled(
         "iGPU utilization",
         describe(&igpu_util, format_percent).0,
         state_label(&igpu_util),
+        provider.gpu_utilization_evidence(GpuKind::Integrated),
     );
     let dgpu_util = provider.gpu_utilization(GpuKind::Discrete);
     labeled(
         "dGPU utilization",
         describe(&dgpu_util, format_percent).0,
         state_label(&dgpu_util),
+        provider.gpu_utilization_evidence(GpuKind::Discrete),
     );
     let ram = provider.ram_usage();
-    labeled("RAM usage", describe(&ram, format_ram).0, state_label(&ram));
+    labeled(
+        "RAM usage",
+        describe(&ram, format_ram).0,
+        state_label(&ram),
+        provider.ram_usage_evidence(),
+    );
     let battery = provider.battery();
     labeled(
         "Battery",
         describe(&battery, format_battery).0,
         state_label(&battery),
+        provider.battery_evidence(),
     );
     let fans = provider.fan_rpm();
     labeled(
         "Fan RPM",
         describe(&fans, |rpms: &Vec<Rpm>| format_fan_rpms(rpms)).0,
         state_label(&fans),
+        provider.fan_rpm_evidence(),
     );
 
     CommandOutput {
@@ -502,6 +527,16 @@ mod tests {
         ram_usage: CapabilityState<MemoryUsage>,
         battery: CapabilityState<BatteryState>,
         fan_rpm: CapabilityState<Vec<Rpm>>,
+        cpu_temperature_evidence: Option<Evidence>,
+        gpu_temperature_integrated_evidence: Option<Evidence>,
+        gpu_temperature_discrete_evidence: Option<Evidence>,
+        cpu_utilization_evidence: Option<Evidence>,
+        gpu_utilization_integrated_evidence: Option<Evidence>,
+        gpu_utilization_discrete_evidence: Option<Evidence>,
+        cpu_frequency_evidence: Option<Evidence>,
+        ram_usage_evidence: Option<Evidence>,
+        battery_evidence: Option<Evidence>,
+        fan_rpm_evidence: Option<Evidence>,
     }
 
     impl FakeProvider {
@@ -526,6 +561,16 @@ mod tests {
                 ram_usage: CapabilityState::Unsupported,
                 battery: CapabilityState::Unsupported,
                 fan_rpm: CapabilityState::Unsupported,
+                cpu_temperature_evidence: None,
+                gpu_temperature_integrated_evidence: None,
+                gpu_temperature_discrete_evidence: None,
+                cpu_utilization_evidence: None,
+                gpu_utilization_integrated_evidence: None,
+                gpu_utilization_discrete_evidence: None,
+                cpu_frequency_evidence: None,
+                ram_usage_evidence: None,
+                battery_evidence: None,
+                fan_rpm_evidence: None,
             }
         }
     }
@@ -565,6 +610,39 @@ mod tests {
         }
         fn fan_rpm(&self) -> CapabilityState<Vec<Rpm>> {
             self.fan_rpm.clone()
+        }
+    }
+
+    impl EvidenceProvider for FakeProvider {
+        fn cpu_temperature_evidence(&self) -> Option<Evidence> {
+            self.cpu_temperature_evidence.clone()
+        }
+        fn gpu_temperature_evidence(&self, gpu: GpuKind) -> Option<Evidence> {
+            match gpu {
+                GpuKind::Integrated => self.gpu_temperature_integrated_evidence.clone(),
+                GpuKind::Discrete => self.gpu_temperature_discrete_evidence.clone(),
+            }
+        }
+        fn cpu_utilization_evidence(&self) -> Option<Evidence> {
+            self.cpu_utilization_evidence.clone()
+        }
+        fn gpu_utilization_evidence(&self, gpu: GpuKind) -> Option<Evidence> {
+            match gpu {
+                GpuKind::Integrated => self.gpu_utilization_integrated_evidence.clone(),
+                GpuKind::Discrete => self.gpu_utilization_discrete_evidence.clone(),
+            }
+        }
+        fn cpu_frequency_evidence(&self) -> Option<Evidence> {
+            self.cpu_frequency_evidence.clone()
+        }
+        fn ram_usage_evidence(&self) -> Option<Evidence> {
+            self.ram_usage_evidence.clone()
+        }
+        fn battery_evidence(&self) -> Option<Evidence> {
+            self.battery_evidence.clone()
+        }
+        fn fan_rpm_evidence(&self) -> Option<Evidence> {
+            self.fan_rpm_evidence.clone()
         }
     }
 
@@ -822,6 +900,67 @@ mod tests {
         assert!(
             out.text
                 .contains("Battery: HARDWARE_DEPENDENT (55% (Discharging) (hardware-dependent))"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn diagnose_prints_evidence_line_when_provider_has_it() {
+        let provider = FakeProvider {
+            cpu_temperature: CapabilityState::Supported(Celsius(55.8)),
+            cpu_temperature_evidence: Some(Evidence {
+                source: "/sys/class/hwmon/hwmon5/temp1_input".to_string(),
+                raw_value: Some("55800".to_string()),
+            }),
+            ..Default::default()
+        };
+
+        let out = run_diagnose(&provider);
+
+        assert!(
+            out.text
+                .contains("  evidence: /sys/class/hwmon/hwmon5/temp1_input = 55800"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn diagnose_omits_evidence_line_when_provider_has_none() {
+        // Fan RPM is Unsupported by FakeProvider's default, with no
+        // evidence set — nothing to point at, so no evidence line at all.
+        let provider = FakeProvider::default();
+
+        let out = run_diagnose(&provider);
+
+        assert!(!out.text.contains("evidence:"), "{}", out.text);
+    }
+
+    #[test]
+    fn diagnose_evidence_line_shows_redacted_battery_value_as_given() {
+        // Redaction itself is EvidenceProvider's job (nitroctl-core); this
+        // only checks diagnose prints whatever redacted string it's handed,
+        // without ever seeing (or being able to leak) the real value.
+        let provider = FakeProvider {
+            battery: CapabilityState::Supported(BatteryState {
+                percent: 87.0,
+                status: BatteryStatus::Discharging,
+                power_watts: None,
+            }),
+            battery_evidence: Some(Evidence {
+                source: "/sys/class/power_supply/BAT1/uevent".to_string(),
+                raw_value: Some(
+                    "POWER_SUPPLY_CAPACITY=87\nPOWER_SUPPLY_SERIAL_NUMBER=[REDACTED]".to_string(),
+                ),
+            }),
+            ..Default::default()
+        };
+
+        let out = run_diagnose(&provider);
+
+        assert!(
+            out.text.contains("POWER_SUPPLY_SERIAL_NUMBER=[REDACTED]"),
             "{}",
             out.text
         );

@@ -116,6 +116,26 @@ Roadmap's M6 decision-3 deferral resolved: scoping `calibration_mode` as its own
 
 M7 is now fully closed out to its deliberately narrower scope: design, implementation, and toggle-only live verification. No persistent udev-rule work planned for this one by default — `calibration_mode` stays root-only unless a user separately decides to relax it (not done automatically, same SAFE-001/002 stance).
 
+## M8 — Diagnose evidence-path + redaction (FR-006 gap) — done 2026-09-06
+
+Closed the FR-006 gap M2 deliberately left open (`docs/cli.md`'s M2 note, `spec.md`'s Acceptance Criteria): `diagnose` now emits raw evidence (paths/values), not just each metric's capability state and formatted value.
+
+Two SPECIFY decisions, confirmed with the user via `AskUserQuestion` before writing any code:
+- **Scope: FR-001-006 only**, not FR-007/008/009's Acer-specific providers (`acer-profile`/`battery-limit`/`battery-calibrate`) — matches spec.md's Acceptance Criteria wording exactly (only FR-001 through FR-006 gate v1); those FRs have their own acceptance notes with no evidence-path requirement.
+- **Evidence = path/command PLUS the actual raw value read, redacted** — not just a bare path name — to satisfy FR-006's literal "raw evidence (paths/values)" wording and its redaction requirement in the same pass, rather than deferring the "values" half again.
+
+Implementation (TDD throughout):
+- New `nitroctl-core::evidence` module: `Evidence { source, raw_value }` struct, `redact_evidence()` (suffix-matches `SERIAL_NUMBER`/`_SERIAL`/`_UUID`/`_ASSET_TAG` in `KEY=value` lines, defensive against DMI fields no provider reads yet, not just today's one real case), and a new `EvidenceProvider: SensorProvider` trait — one method per FR-001-006 metric, kept separate from `SensorProvider` itself so `status`/`sensors`/`battery`/`fans` (polled repeatedly by the GUI) don't pay for evidence-string formatting they don't need.
+- `GenericLinux`'s internal read helpers (`read_millidegrees`, `nvidia_smi_metric`) were refactored to `_with_raw` variants returning `(CapabilityState<T>, Option<String>)` — a single source of truth both the typed reading and its evidence draw from, so the two can't drift apart on which path was actually checked. `AcerNitroV15` delegates every `EvidenceProvider` method to `GenericLinux`, same pattern as `SensorProvider`.
+- `nitroctl-cli`: `run_diagnose` now takes `&dyn EvidenceProvider`; each metric line gets an indented `  evidence: <source> = <raw value>` line when evidence exists (present even for `Unknown`-state garbage readings — useful for a bug report — omitted only for `Unsupported`, nothing to point at). `dmi::build_evidence_provider` added alongside the existing `build_sensor_provider`.
+- 25 new tests (17 `GenericLinux` provider tests, 1 `AcerNitroV15` delegation test, 4 `redact_evidence` unit tests, 3 `nitroctl-cli` diagnose tests) — 191/191 workspace tests, clippy/fmt clean.
+
+**Live verification: done 2026-09-06.** Ran the real `nitroctl diagnose` binary on this machine (post-Omarchy-migration, `hardware.md`'s 2026-09-06 update) — every metric line carries a correct evidence line (exact sysfs paths for CPU/iGPU temp, `/proc/stat`/`/proc/meminfo`, hwmon fan paths; the literal `nvidia-smi` command line for dGPU temp/util). Confirmed live: the battery's real `POWER_SUPPLY_SERIAL_NUMBER` field renders as `POWER_SUPPLY_SERIAL_NUMBER=[REDACTED]`, while `POWER_SUPPLY_MODEL_NAME`/`MANUFACTURER`/`CAPACITY` print unredacted (correctly not treated as PII) — grepped the full output for the real serial string, zero matches.
+
+Spec.md's Acceptance Criteria item "`nitroctl diagnose` output has been manually reviewed for accidental PII leakage before being documented as a bug-report tool" is now satisfied for the FR-001-006 evidence this milestone adds.
+
+Also on 2026-09-06: a general-purpose subagent independently audited the whole repo against every M0-M7/FR-001-009 "done" claim in `spec.md`/`roadmap.md`/`architecture.md`/`hardware.md`/`cli.md` before M8 started — no discrepancies found (test counts, trait/CLI-surface existence, and capability-state honesty all matched documented claims exactly), giving a verified-clean baseline to build M8 against.
+
 ## M5+ — remaining re-evaluation items
 
 - **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.

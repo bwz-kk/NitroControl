@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use crate::command::CommandRunner;
+use crate::evidence::EvidenceProvider;
 use crate::provider::{AcerNitroV15, GenericLinux};
 use crate::sensor::SensorProvider;
 use crate::sysfs::SysfsReader;
@@ -37,6 +38,20 @@ pub fn detect_provider_kind(sysfs: &impl SysfsReader) -> ProviderKind {
 
 /// Builds the `SensorProvider` matching this machine.
 pub fn build_sensor_provider<R, C>(sysfs: R, commands: C) -> Box<dyn SensorProvider>
+where
+    R: SysfsReader + 'static,
+    C: CommandRunner + 'static,
+{
+    match detect_provider_kind(&sysfs) {
+        ProviderKind::AcerNitroV15 => Box::new(AcerNitroV15::new(sysfs, commands)),
+        ProviderKind::GenericLinux => Box::new(GenericLinux::new(sysfs, commands)),
+    }
+}
+
+/// Builds the `EvidenceProvider` matching this machine — same selection as
+/// `build_sensor_provider` (both traits are implemented by the same
+/// provider structs), used only by `diagnose` (FR-006).
+pub fn build_evidence_provider<R, C>(sysfs: R, commands: C) -> Box<dyn EvidenceProvider>
 where
     R: SysfsReader + 'static,
     C: CommandRunner + 'static,

@@ -7,6 +7,7 @@ pub mod battery_limit;
 pub mod capability;
 pub mod command;
 pub mod dmi;
+pub mod evidence;
 pub mod power_profile;
 pub mod provider;
 pub mod sensor;
