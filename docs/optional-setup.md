@@ -179,3 +179,57 @@ sudo rm -rf /usr/src/acer-wmi-battery-0.1.0-nitrocontrol1
 
 (A reboot after removing the modules-load.d and udev-rules files, plus the
 DKMS removal, returns everything to stock.)
+
+---
+
+# Optional setup: unprivileged CPU package power draw (M10, FR-010)
+
+Also manual, also copy-paste-only — same SAFE-001/SAFE-002 stance as above.
+No out-of-tree driver this time: the interface (`powercap`) is fully in-tree,
+already loaded by default. Only the file permission is root-only.
+
+Applies to: any machine with a `/sys/class/powercap/intel-rapl:0/energy_uj`
+node (the "intel-rapl" name is a generic Linux driver name, not
+Intel-specific — confirmed present and working on this AMD machine, see
+`hardware.md`). Verify `sudo nitroctl power-draw` returns a real wattage on
+your own machine first, per COMPAT-002, before relying on this.
+
+## 1. Relax read permission on `energy_uj`, via udev
+
+```bash
+echo 'SUBSYSTEM=="powercap", KERNEL=="intel-rapl:0", RUN+="/usr/bin/chgrp wheel /sys/class/powercap/intel-rapl:0/energy_uj", RUN+="/usr/bin/chmod 664 /sys/class/powercap/intel-rapl:0/energy_uj"' | sudo tee /etc/udev/rules.d/90-nitrocontrol-rapl-power-draw.rules
+```
+
+Change `wheel` to whatever group your unprivileged user is actually in if
+different (`groups $USER`).
+
+Apply it now (fires automatically on every future boot on its own — this
+manual trigger is only needed once, for the device instance already present
+before the rule existed):
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=add --subsystem-match=powercap
+stat -c '%A %U:%G' /sys/class/powercap/intel-rapl:0/energy_uj   # expect: -rw-rw-r-- root:wheel
+```
+
+## 2. Confirm
+
+```bash
+nitroctl power-draw    # no sudo
+```
+
+If that prints a real wattage instead of "requires elevated privilege", the
+rule applied correctly.
+
+## Reverting
+
+```bash
+sudo rm /etc/udev/rules.d/90-nitrocontrol-rapl-power-draw.rules
+sudo udevadm control --reload-rules
+sudo chgrp root /sys/class/powercap/intel-rapl:0/energy_uj
+sudo chmod 400 /sys/class/powercap/intel-rapl:0/energy_uj
+```
+
+(A reboot after removing the rules file returns permission to root-only on
+its own, since nothing else relaxes it.)

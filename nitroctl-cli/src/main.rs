@@ -2,13 +2,14 @@ use clap::{Parser, Subcommand};
 use nitroctl_cli::commands::{
     run_acer_profile_get, run_acer_profile_list, run_acer_profile_set, run_battery,
     run_battery_calibrate_get, run_battery_calibrate_set, run_battery_limit_get,
-    run_battery_limit_set, run_diagnose, run_fans, run_profile_get, run_profile_list,
-    run_profile_set, run_sensors, run_status, CommandOutput,
+    run_battery_limit_set, run_diagnose, run_fans, run_power_draw, run_profile_get,
+    run_profile_list, run_profile_set, run_sensors, run_status, CommandOutput,
 };
 use nitroctl_core::battery_calibration::BatteryCalibrationProvider;
 use nitroctl_core::battery_limit::AcerWmiBatteryBackend;
 use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
+use nitroctl_core::power_draw::RaplPowerBackend;
 use nitroctl_core::power_profile::{
     AcerPlatformProfileBackend, FailedBackend, PowerProfilesDaemon, ZbusPowerProfilesBackend,
 };
@@ -53,6 +54,10 @@ enum Command {
     /// section). `set on` starts it; the driver never signals completion.
     #[command(subcommand)]
     BatteryCalibrate(BatteryCalibrateCommand),
+    /// CPU package power draw via the RAPL-compatible powercap interface
+    /// (M10, FR-010) -- root-only by default on most machines (see
+    /// docs/optional-setup.md for the copy-paste udev-rule relax).
+    PowerDraw,
     /// Capability matrix + evidence, for GitHub bug reports.
     Diagnose,
 }
@@ -96,6 +101,10 @@ fn main() {
         Command::Sensors => run_sensors(sensor_provider().as_ref()),
         Command::Battery => run_battery(sensor_provider().as_ref()),
         Command::Fans => run_fans(sensor_provider().as_ref()),
+        Command::PowerDraw => {
+            let power_draw_provider = RaplPowerBackend::new(RealSysfsReader);
+            run_power_draw(&power_draw_provider)
+        }
         Command::Diagnose => run_diagnose(evidence_provider().as_ref()),
         Command::Profile(profile_command) => {
             // Connecting never hard-fails the CLI: on failure, FailedBackend

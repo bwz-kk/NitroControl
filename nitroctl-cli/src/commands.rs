@@ -10,8 +10,9 @@ use nitroctl_core::battery_calibration::{BatteryCalibrationProvider, Calibration
 use nitroctl_core::battery_limit::{BatteryLimitError, BatteryLimitProvider};
 use nitroctl_core::capability::CapabilityState;
 use nitroctl_core::evidence::{Evidence, EvidenceProvider};
+use nitroctl_core::power_draw::PowerDrawProvider;
 use nitroctl_core::power_profile::{PowerProfileProvider, ProfileError, ProfileStatus};
-use nitroctl_core::sensor::{GpuKind, MemoryUsage, Percent, Rpm, SensorProvider};
+use nitroctl_core::sensor::{GpuKind, MemoryUsage, Percent, Rpm, SensorProvider, Watts};
 
 /// Per NFR-002, a bounded (not indefinite) pause: `cpu_utilization`'s rate
 /// calculation needs two `/proc/stat` samples, but every CLI invocation is a
@@ -26,6 +27,26 @@ fn sampled_cpu_utilization<P: SensorProvider + ?Sized>(provider: &P) -> Capabili
     }
     std::thread::sleep(CPU_UTILIZATION_SAMPLE_INTERVAL);
     provider.cpu_utilization()
+}
+
+/// Same two-sample pattern as `sampled_cpu_utilization`, for
+/// `PowerDrawProvider::cpu_package_power`'s energy-delta rate calculation —
+/// reuses the same bounded interval (M10's DISCOVER found this zone's
+/// wraparound range is tiny, ~65.5 J, but still large enough that a single
+/// wrap can't happen within 200ms at any realistic laptop package power).
+/// Unlike `sampled_cpu_utilization`, only retries on `Unknown` ("no baseline
+/// yet") — `RequiresPrivilege`/`Unsupported` are terminal, retrying them
+/// would just add a pointless 200ms to every unprivileged invocation (the
+/// common case for this metric, per M10's DISCOVER).
+fn sampled_cpu_package_power<P: PowerDrawProvider + ?Sized>(
+    provider: &P,
+) -> CapabilityState<Watts> {
+    let first = provider.cpu_package_power();
+    if !matches!(first, CapabilityState::Unknown) {
+        return first;
+    }
+    std::thread::sleep(CPU_UTILIZATION_SAMPLE_INTERVAL);
+    provider.cpu_package_power()
 }
 
 pub struct CommandOutput {
@@ -70,6 +91,10 @@ fn format_percent(p: &nitroctl_core::sensor::Percent) -> String {
 
 fn format_megahertz(m: &nitroctl_core::sensor::Megahertz) -> String {
     format!("{:.0} MHz", m.0)
+}
+
+fn format_watts(w: &Watts) -> String {
+    format!("{:.1} W", w.0)
 }
 
 fn format_ram(usage: &MemoryUsage) -> String {
@@ -179,6 +204,19 @@ pub fn run_fans(provider: &dyn SensorProvider) -> CommandOutput {
     let (value, exit_code) = describe(&state, |rpms: &Vec<Rpm>| format_fan_rpms(rpms));
     CommandOutput {
         text: format!("Fan RPM: {value}"),
+        exit_code,
+    }
+}
+
+/// M10, FR-010. `RequiresPrivilege` is the expected default result on most
+/// machines (root-only `energy_uj`, see `power_draw.rs`) — the generic
+/// "requires elevated privilege" wording already covers it, same rendering
+/// as every other capability state.
+pub fn run_power_draw(provider: &dyn PowerDrawProvider) -> CommandOutput {
+    let state = sampled_cpu_package_power(provider);
+    let (value, exit_code) = describe(&state, format_watts);
+    CommandOutput {
+        text: format!("CPU package power: {value}"),
         exit_code,
     }
 }
@@ -1516,5 +1554,62 @@ mod tests {
             out.text
         );
         assert_eq!(out.exit_code, 3);
+    }
+
+    // ---- run_power_draw ----
+
+    struct FakePowerDrawProvider {
+        cpu_package_power: CapabilityState<Watts>,
+    }
+
+    impl Default for FakePowerDrawProvider {
+        fn default() -> Self {
+            Self {
+                cpu_package_power: CapabilityState::Unsupported,
+            }
+        }
+    }
+
+    impl PowerDrawProvider for FakePowerDrawProvider {
+        fn cpu_package_power(&self) -> CapabilityState<Watts> {
+            self.cpu_package_power.clone()
+        }
+    }
+
+    #[test]
+    fn power_draw_prints_watts_when_supported() {
+        let provider = FakePowerDrawProvider {
+            cpu_package_power: CapabilityState::Supported(Watts(25.3)),
+        };
+
+        let out = run_power_draw(&provider);
+
+        assert_eq!(out.text, "CPU package power: 25.3 W");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn power_draw_requires_privilege_by_default() {
+        // The expected default result on most machines (root-only
+        // energy_uj, per power_draw.rs) — must not retry-sleep for this,
+        // just report it immediately.
+        let provider = FakePowerDrawProvider {
+            cpu_package_power: CapabilityState::RequiresPrivilege,
+        };
+
+        let out = run_power_draw(&provider);
+
+        assert_eq!(out.text, "CPU package power: requires elevated privilege");
+        assert_eq!(out.exit_code, 1);
+    }
+
+    #[test]
+    fn power_draw_unavailable_when_powercap_zone_missing() {
+        let provider = FakePowerDrawProvider::default();
+
+        let out = run_power_draw(&provider);
+
+        assert_eq!(out.text, "CPU package power: unavailable");
+        assert_eq!(out.exit_code, 1);
     }
 }

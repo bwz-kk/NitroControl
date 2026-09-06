@@ -15,6 +15,9 @@ pub struct Megahertz(pub f64);
 pub struct Rpm(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Watts(pub f64);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MemoryUsage {
     pub total_bytes: u64,
     pub used_bytes: u64,

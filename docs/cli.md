@@ -12,8 +12,11 @@ nitroctl fans                    # "unavailable" on this hardware — explicit, 
 nitroctl profile list            # performance / balanced / power-saver
 nitroctl profile get
 nitroctl profile set <name>
+nitroctl power-draw               # CPU package power, watts (M10, FR-010) -- root by default, see docs/optional-setup.md
 nitroctl diagnose                # capability matrix + evidence, for GitHub bug reports
 ```
+
+(`acer-profile`, `battery-limit`, `battery-calibrate` — M5/M6/M7's post-v1 additions — aren't listed in this v1-target block; see `roadmap.md`'s milestone sections and `main.rs`'s `Command` enum for their exact subcommand shapes.)
 
 ## Output conventions
 

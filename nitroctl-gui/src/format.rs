@@ -6,7 +6,7 @@
 
 use nitroctl_core::capability::CapabilityState;
 use nitroctl_core::power_profile::ProfileStatus;
-use nitroctl_core::sensor::{BatteryState, Celsius, Megahertz, MemoryUsage, Percent, Rpm};
+use nitroctl_core::sensor::{BatteryState, Celsius, Megahertz, MemoryUsage, Percent, Rpm, Watts};
 
 /// What one dashboard row shows: the subtitle text, and whether it's a real
 /// value (`true`) or an explicit "unavailable"/"unknown"/etc. state
@@ -116,6 +116,17 @@ pub fn fan_rpm_row(state: &CapabilityState<Vec<Rpm>>) -> RowContent {
 
 pub fn profile_status_row(state: &CapabilityState<ProfileStatus>) -> RowContent {
     describe(state, profile_status)
+}
+
+pub fn watts(w: &Watts) -> String {
+    format!("{:.1} W", w.0)
+}
+
+/// M10/FR-010. `RequiresPrivilege` is the expected default result on most
+/// machines (root-only `energy_uj`) — rendered the same generic way as
+/// every other row's non-`Supported` state, no special-casing needed.
+pub fn power_draw_row(state: &CapabilityState<Watts>) -> RowContent {
+    describe(state, watts)
 }
 
 pub fn battery_limit(enabled: &bool) -> String {
@@ -253,6 +264,18 @@ mod tests {
             hardware_backed: true,
         };
         assert_eq!(profile_status(&status), "balanced");
+    }
+
+    #[test]
+    fn formats_watts_one_decimal() {
+        assert_eq!(watts(&Watts(25.34)), "25.3 W");
+    }
+
+    #[test]
+    fn power_draw_row_requires_privilege_by_default() {
+        let row = power_draw_row(&CapabilityState::RequiresPrivilege);
+        assert_eq!(row.subtitle, "requires elevated privilege");
+        assert!(!row.available);
     }
 
     #[test]
