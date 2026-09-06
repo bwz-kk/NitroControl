@@ -224,7 +224,9 @@ Follow-up to M6: `nitroctl-core`/`cli`/`gui` implemented `calibration_mode` (TDD
 
 ## Powercap
 
-- `/sys/class/powercap/intel-rapl*` is present. The `intel-rapl` name is the generic Linux driver name for the RAPL-style powercap zone and is a naming artifact — it does not imply an Intel CPU. Not verified further this pass; noted as a possible secondary power-draw data source for a future milestone.
+- `/sys/class/powercap/intel-rapl*` is present. The `intel-rapl` name is the generic Linux driver name for the RAPL-style powercap zone and is a naming artifact — it does not imply an Intel CPU.
+- **M10, verified 2026-09-06.** `intel-rapl:0` (`name` = `package-0`) and `intel-rapl:0:0` (`name` = `core`) both exist. `energy_uj` is `-r-------- root:root` on this machine — **root-only by default**, unlike every other v1 sensor (`stat` confirmed the exact permission). `max_energy_range_uj` is `65532610987` (≈65.5 J) — a **small wraparound range**: at this machine's observed idle-ish package draw (roughly 6-8 W during this check), the counter wraps roughly every 8-11 seconds, far more often than a typical Intel RAPL package domain (often hundreds of joules). `nitroctl-core`'s `power_draw` module handles this by re-reading `max_energy_range_uj` and adding it back whenever the counter goes backwards, rather than assuming a fixed range.
+- Live-verified via `sudo nitroctl power-draw`: real reading (`6.4 W`) obtained, order-of-magnitude cross-checked against a raw two-sample `cat energy_uj` delta over the same ~0.2s window. Unprivileged run correctly reports `requires elevated privilege`, exit 1.
 
 ## Capability Matrix
 
@@ -239,6 +241,7 @@ Follow-up to M6: `nitroctl-core`/`cli`/`gui` implemented `calibration_mode` (TDD
 | CPU frequency | SUPPORTED | SUPPORTED | N/A | `cpufreq` sysfs | Yes |
 | GPU frequency (dGPU) | SUPPORTED | SUPPORTED | N/A | NVML | Yes |
 | GPU frequency (iGPU) | UNKNOWN | UNKNOWN | N/A | `pp_dpm_sclk` path unconfirmed | No |
+| CPU package power draw | HARDWARE_DEPENDENT | HARDWARE_DEPENDENT (root by default) | N/A | `powercap` `intel-rapl:0` (`package-0`), `energy_uj` two-sample delta | Yes — `sudo nitroctl power-draw` returned a real wattage (M10), unprivileged run correctly reports `requires elevated privilege`; `energy_uj` root-only, no udev-rule relax shipped or documented yet (unlike FR-007/008's `platform_profile`/`health_mode`) |
 | RAM usage | SUPPORTED | SUPPORTED | N/A | `/proc/meminfo` | Yes |
 | VRAM usage (dGPU) | SUPPORTED | SUPPORTED | N/A | NVML | Yes |
 | Battery status/charge % | SUPPORTED | SUPPORTED | N/A | `power_supply` BAT1 | Yes |

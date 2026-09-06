@@ -30,6 +30,7 @@ use nitroctl_core::battery_calibration::BatteryCalibrationProvider;
 use nitroctl_core::battery_limit::{AcerWmiBatteryBackend, BatteryLimitProvider};
 use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
+use nitroctl_core::power_draw::{PowerDrawProvider, RaplPowerBackend};
 use nitroctl_core::power_profile::{
     AcerPlatformProfileBackend, FailedBackend, PowerProfileProvider, PowerProfilesDaemon,
     ZbusPowerProfilesBackend,
@@ -83,6 +84,16 @@ fn build_battery_calibration_provider() -> Arc<dyn BatteryCalibrationProvider> {
     Arc::new(AcerWmiBatteryBackend::new(RealSysfsReader))
 }
 
+/// M10/FR-010: CPU package power draw over the RAPL-compatible powercap
+/// interface. Same statefulness reason as `SensorProvider` above (built
+/// once, shared via `Arc`) — the energy-delta rate calculation only
+/// produces a real value across two calls on the *same* instance, and here
+/// that's naturally satisfied by successive poll ticks rather than a
+/// CLI-style artificial sleep.
+fn build_power_draw_provider() -> Arc<dyn PowerDrawProvider> {
+    Arc::new(RaplPowerBackend::new(RealSysfsReader))
+}
+
 /// Every value the dashboard displays, read in one go on the worker thread.
 struct Snapshot {
     cpu_temperature: RowContent,
@@ -99,6 +110,7 @@ struct Snapshot {
     acer_profile: RowContent,
     battery_limit: RowContent,
     battery_calibration: RowContent,
+    power_draw: RowContent,
 }
 
 /// Blocking: reads every sensor + both power-profile sources + the battery
@@ -110,6 +122,7 @@ fn take_snapshot(
     acer_profile: &dyn PowerProfileProvider,
     battery_limit: &dyn BatteryLimitProvider,
     battery_calibration: &dyn BatteryCalibrationProvider,
+    power_draw: &dyn PowerDrawProvider,
 ) -> Snapshot {
     Snapshot {
         cpu_temperature: format::cpu_temperature_row(&sensors.cpu_temperature()),
@@ -132,6 +145,7 @@ fn take_snapshot(
         battery_calibration: format::battery_calibration_row(
             &battery_calibration.calibration_mode(),
         ),
+        power_draw: format::power_draw_row(&power_draw.cpu_package_power()),
     }
 }
 
@@ -171,6 +185,7 @@ struct Dashboard {
     acer_profile: DashboardRow,
     battery_limit: DashboardRow,
     battery_calibration: DashboardRow,
+    power_draw: DashboardRow,
 }
 
 impl Dashboard {
@@ -190,6 +205,7 @@ impl Dashboard {
         self.battery_limit.update(&snapshot.battery_limit);
         self.battery_calibration
             .update(&snapshot.battery_calibration);
+        self.power_draw.update(&snapshot.power_draw);
     }
 }
 
@@ -216,6 +232,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let acer_profile = DashboardRow::new("Acer Firmware Profile");
     let battery_limit = DashboardRow::new("Battery Charge Limit");
     let battery_calibration = DashboardRow::new("Battery Calibration Mode");
+    let power_draw = DashboardRow::new("CPU Package Power");
 
     let cpu_group = group(
         "CPU",
@@ -223,6 +240,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
             &cpu_temperature.widget,
             &cpu_utilization.widget,
             &cpu_frequency.widget,
+            &power_draw.widget,
         ],
     );
     let gpu_group = group(
@@ -285,6 +303,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         acer_profile,
         battery_limit,
         battery_calibration,
+        power_draw,
     });
 
     // Built once, shared across every poll — see the module doc comment
@@ -294,6 +313,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let acer_profile_provider = build_acer_profile_provider();
     let battery_limit_provider = build_battery_limit_provider();
     let battery_calibration_provider = build_battery_calibration_provider();
+    let power_draw_provider = build_power_draw_provider();
 
     // Guards against overlapping poll ticks: if a snapshot is still running
     // (e.g. a slow D-Bus call) when the next timer tick fires, that tick is
@@ -315,6 +335,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
             let acer_profile_provider = acer_profile_provider.clone();
             let battery_limit_provider = battery_limit_provider.clone();
             let battery_calibration_provider = battery_calibration_provider.clone();
+            let power_draw_provider = power_draw_provider.clone();
             let poll_in_flight = poll_in_flight.clone();
             glib::MainContext::default().spawn_local(async move {
                 let result = gio::spawn_blocking(move || {
@@ -324,6 +345,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
                         acer_profile_provider.as_ref(),
                         battery_limit_provider.as_ref(),
                         battery_calibration_provider.as_ref(),
+                        power_draw_provider.as_ref(),
                     )
                 })
                 .await;
