@@ -21,6 +21,7 @@
 
 use crate::capability::CapabilityState;
 use crate::command::CommandRunner;
+use crate::evidence::{Evidence, EvidenceProvider};
 use crate::provider::generic_linux::GenericLinux;
 use crate::sensor::{
     BatteryState, Celsius, GpuKind, Megahertz, MemoryUsage, Percent, Rpm, SensorProvider,
@@ -75,6 +76,44 @@ impl<R: SysfsReader, C: CommandRunner> SensorProvider for AcerNitroV15<R, C> {
         // Pinned explicitly here (rather than left purely implicit via
         // delegation) so the "why" is visible at the Acer-specific layer.
         self.generic.fan_rpm()
+    }
+}
+
+impl<R: SysfsReader, C: CommandRunner> EvidenceProvider for AcerNitroV15<R, C> {
+    // Every v1 metric on this model comes from the same generic Linux
+    // interfaces as any other machine (see module doc comment) — evidence
+    // delegates to GenericLinux for exactly the same reason cpu_temperature
+    // etc. do above.
+    fn cpu_temperature_evidence(&self) -> Option<Evidence> {
+        self.generic.cpu_temperature_evidence()
+    }
+
+    fn gpu_temperature_evidence(&self, gpu: GpuKind) -> Option<Evidence> {
+        self.generic.gpu_temperature_evidence(gpu)
+    }
+
+    fn cpu_utilization_evidence(&self) -> Option<Evidence> {
+        self.generic.cpu_utilization_evidence()
+    }
+
+    fn gpu_utilization_evidence(&self, gpu: GpuKind) -> Option<Evidence> {
+        self.generic.gpu_utilization_evidence(gpu)
+    }
+
+    fn cpu_frequency_evidence(&self) -> Option<Evidence> {
+        self.generic.cpu_frequency_evidence()
+    }
+
+    fn ram_usage_evidence(&self) -> Option<Evidence> {
+        self.generic.ram_usage_evidence()
+    }
+
+    fn battery_evidence(&self) -> Option<Evidence> {
+        self.generic.battery_evidence()
+    }
+
+    fn fan_rpm_evidence(&self) -> Option<Evidence> {
+        self.generic.fan_rpm_evidence()
     }
 }
 
@@ -135,6 +174,26 @@ mod tests {
         assert_eq!(
             p.fan_rpm(),
             CapabilityState::Supported(vec![Rpm(2945), Rpm(2576)])
+        );
+    }
+
+    #[test]
+    fn delegates_cpu_temperature_evidence_to_generic_linux() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/hwmon",
+            vec![PathBuf::from("/sys/class/hwmon/hwmon5")],
+        );
+        sysfs.set_content("/sys/class/hwmon/hwmon5/name", "k10temp\n");
+        sysfs.set_content("/sys/class/hwmon/hwmon5/temp1_input", "55800\n");
+        let p = AcerNitroV15::new(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.cpu_temperature_evidence(),
+            Some(Evidence {
+                source: "/sys/class/hwmon/hwmon5/temp1_input".to_string(),
+                raw_value: Some("55800".to_string()),
+            })
         );
     }
 }

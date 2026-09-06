@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 use crate::capability::CapabilityState;
 use crate::command::CommandRunner;
+use crate::evidence::{redact_evidence, Evidence, EvidenceProvider};
 use crate::sensor::{
     BatteryState, BatteryStatus, Celsius, GpuKind, Megahertz, MemoryUsage, Percent, Rpm,
     SensorProvider,
@@ -50,27 +51,43 @@ impl<R: SysfsReader, C: CommandRunner> GenericLinux<R, C> {
     /// Reads a millidegree-Celsius sysfs file (e.g. `temp1_input`) into a
     /// `CapabilityState<Celsius>`, distinguishing permission and parse errors.
     fn read_millidegrees(&self, path: &Path) -> CapabilityState<Celsius> {
+        self.read_millidegrees_with_raw(path).0
+    }
+
+    /// Same as `read_millidegrees`, but also returns the raw file content
+    /// when the read itself succeeded (regardless of whether it then parsed
+    /// into a plausible value) — the single source of truth both the typed
+    /// reading and FR-006's evidence output draw from, so they can never
+    /// drift apart on which path was actually checked.
+    fn read_millidegrees_with_raw(
+        &self,
+        path: &Path,
+    ) -> (CapabilityState<Celsius>, Option<String>) {
         // Sane bounds for a laptop CPU/GPU die temperature. Anything outside
         // this range is a corrupt/garbage sensor reading, not real hardware
         // state, and must not be trusted blindly (see roadmap.md M1).
         const PLAUSIBLE_RANGE_C: std::ops::RangeInclusive<f64> = -40.0..=150.0;
 
         match self.sysfs.read_to_string(path) {
-            Ok(raw) => match raw.trim().parse::<f64>() {
-                Ok(millidegrees) => {
-                    let celsius = millidegrees / 1000.0;
-                    if PLAUSIBLE_RANGE_C.contains(&celsius) {
-                        CapabilityState::Supported(Celsius(celsius))
-                    } else {
-                        CapabilityState::Unknown
+            Ok(raw) => {
+                let trimmed = raw.trim().to_string();
+                let state = match trimmed.parse::<f64>() {
+                    Ok(millidegrees) => {
+                        let celsius = millidegrees / 1000.0;
+                        if PLAUSIBLE_RANGE_C.contains(&celsius) {
+                            CapabilityState::Supported(Celsius(celsius))
+                        } else {
+                            CapabilityState::Unknown
+                        }
                     }
-                }
-                Err(_) => CapabilityState::Unknown,
-            },
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                CapabilityState::RequiresPrivilege
+                    Err(_) => CapabilityState::Unknown,
+                };
+                (state, Some(trimmed))
             }
-            Err(_) => CapabilityState::Unknown,
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                (CapabilityState::RequiresPrivilege, None)
+            }
+            Err(_) => (CapabilityState::Unknown, None),
         }
     }
 
@@ -78,10 +95,23 @@ impl<R: SysfsReader, C: CommandRunner> GenericLinux<R, C> {
     /// and parses the single numeric value it prints, shared by the
     /// temperature and utilization discrete-GPU queries below.
     fn nvidia_smi_metric(&self, query_gpu: &str) -> Option<f64> {
-        self.commands
+        self.nvidia_smi_metric_with_raw(query_gpu).0
+    }
+
+    /// Same as `nvidia_smi_metric`, but also returns the raw stdout when the
+    /// subprocess ran at all — the single source of truth both the typed
+    /// reading and FR-006's evidence output draw from.
+    fn nvidia_smi_metric_with_raw(&self, query_gpu: &str) -> (Option<f64>, Option<String>) {
+        match self
+            .commands
             .run("nvidia-smi", &[query_gpu, "--format=csv,noheader,nounits"])
-            .ok()
-            .and_then(|raw| raw.trim().parse::<f64>().ok())
+        {
+            Ok(raw) => {
+                let trimmed = raw.trim().to_string();
+                (trimmed.parse::<f64>().ok(), Some(trimmed))
+            }
+            Err(_) => (None, None),
+        }
     }
 
     fn gpu_temperature_discrete(&self) -> CapabilityState<Celsius> {
@@ -341,6 +371,170 @@ impl<R: SysfsReader, C: CommandRunner> SensorProvider for GenericLinux<R, C> {
             CapabilityState::Unsupported
         } else {
             CapabilityState::Supported(rpms)
+        }
+    }
+}
+
+impl<R: SysfsReader, C: CommandRunner> EvidenceProvider for GenericLinux<R, C> {
+    fn cpu_temperature_evidence(&self) -> Option<Evidence> {
+        let hwmon = self.find_hwmon_by_name(&["k10temp", "coretemp"])?;
+        let path = hwmon.join("temp1_input");
+        let (_, raw) = self.read_millidegrees_with_raw(&path);
+        raw.map(|raw_value| Evidence {
+            source: path.display().to_string(),
+            raw_value: Some(raw_value),
+        })
+    }
+
+    fn gpu_temperature_evidence(&self, gpu: GpuKind) -> Option<Evidence> {
+        match gpu {
+            GpuKind::Integrated => {
+                let hwmon = self.find_hwmon_by_name(&["amdgpu"])?;
+                let path = hwmon.join("temp1_input");
+                let (_, raw) = self.read_millidegrees_with_raw(&path);
+                raw.map(|raw_value| Evidence {
+                    source: path.display().to_string(),
+                    raw_value: Some(raw_value),
+                })
+            }
+            GpuKind::Discrete => {
+                let (_, raw) = self.nvidia_smi_metric_with_raw("--query-gpu=temperature.gpu");
+                raw.map(|raw_value| Evidence {
+                    source: "nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits"
+                        .to_string(),
+                    raw_value: Some(raw_value),
+                })
+            }
+        }
+    }
+
+    fn cpu_utilization_evidence(&self) -> Option<Evidence> {
+        let raw = self.sysfs.read_to_string(Path::new("/proc/stat")).ok()?;
+        let line = raw.lines().find(|l| l.starts_with("cpu "))?;
+        Some(Evidence {
+            source: "/proc/stat".to_string(),
+            raw_value: Some(line.to_string()),
+        })
+    }
+
+    fn gpu_utilization_evidence(&self, gpu: GpuKind) -> Option<Evidence> {
+        match gpu {
+            // No confirmed sysfs path on this hardware (see gpu_utilization
+            // above) — nothing to point at, so no evidence either.
+            GpuKind::Integrated => None,
+            GpuKind::Discrete => {
+                let (_, raw) = self.nvidia_smi_metric_with_raw("--query-gpu=utilization.gpu");
+                raw.map(|raw_value| Evidence {
+                    source: "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits"
+                        .to_string(),
+                    raw_value: Some(raw_value),
+                })
+            }
+        }
+    }
+
+    fn cpu_frequency_evidence(&self) -> Option<Evidence> {
+        let entries = self
+            .sysfs
+            .read_dir(Path::new("/sys/devices/system/cpu"))
+            .ok()?;
+        let cpu_dirs: Vec<_> = entries
+            .into_iter()
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(is_cpu_dir_name)
+                    .unwrap_or(false)
+            })
+            .collect();
+        if cpu_dirs.is_empty() {
+            return None;
+        }
+
+        let mut paths = Vec::new();
+        let mut values = Vec::new();
+        for dir in &cpu_dirs {
+            let path = dir.join("cpufreq").join("scaling_cur_freq");
+            if let Ok(raw) = self.sysfs.read_to_string(&path) {
+                paths.push(path.display().to_string());
+                values.push(raw.trim().to_string());
+            }
+        }
+        if paths.is_empty() {
+            return None;
+        }
+        Some(Evidence {
+            source: paths.join(", "),
+            raw_value: Some(values.join(", ")),
+        })
+    }
+
+    fn ram_usage_evidence(&self) -> Option<Evidence> {
+        let raw = self.sysfs.read_to_string(Path::new("/proc/meminfo")).ok()?;
+        let relevant: Vec<&str> = raw
+            .lines()
+            .filter(|l| l.starts_with("MemTotal") || l.starts_with("MemAvailable"))
+            .collect();
+        Some(Evidence {
+            source: "/proc/meminfo".to_string(),
+            raw_value: Some(relevant.join("\n")),
+        })
+    }
+
+    fn battery_evidence(&self) -> Option<Evidence> {
+        let entries = self
+            .sysfs
+            .read_dir(Path::new("/sys/class/power_supply"))
+            .ok()?;
+        let mut bat_dirs: Vec<PathBuf> = entries
+            .into_iter()
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("BAT"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        bat_dirs.sort();
+        let bat_dir = bat_dirs.into_iter().next()?;
+        let path = bat_dir.join("uevent");
+        let raw = self.sysfs.read_to_string(&path).ok()?;
+        Some(Evidence {
+            source: path.display().to_string(),
+            raw_value: Some(redact_evidence(&raw)),
+        })
+    }
+
+    fn fan_rpm_evidence(&self) -> Option<Evidence> {
+        let hwmon_dirs = self.sysfs.read_dir(Path::new("/sys/class/hwmon")).ok()?;
+        let mut paths = Vec::new();
+        let mut values = Vec::new();
+        for hwmon in hwmon_dirs {
+            let Ok(files) = self.sysfs.read_dir(&hwmon) else {
+                continue;
+            };
+            for file in files {
+                let is_fan_input = file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(is_fan_input_name)
+                    .unwrap_or(false);
+                if !is_fan_input {
+                    continue;
+                }
+                if let Ok(raw) = self.sysfs.read_to_string(&file) {
+                    paths.push(file.display().to_string());
+                    values.push(raw.trim().to_string());
+                }
+            }
+        }
+        if paths.is_empty() {
+            None
+        } else {
+            Some(Evidence {
+                source: paths.join(", "),
+                raw_value: Some(values.join(", ")),
+            })
         }
     }
 }
@@ -844,5 +1038,279 @@ mod tests {
         let p = provider(sysfs, MockCommandRunner::new());
 
         assert_eq!(p.fan_rpm(), CapabilityState::Supported(vec![Rpm(2400)]));
+    }
+
+    // ---- EvidenceProvider (FR-006) ----
+
+    #[test]
+    fn cpu_temperature_evidence_names_matched_hwmon_path_and_raw_value() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(hwmon_root(), vec![PathBuf::from("/sys/class/hwmon/hwmon5")]);
+        sysfs.set_content("/sys/class/hwmon/hwmon5/name", "k10temp\n");
+        sysfs.set_content("/sys/class/hwmon/hwmon5/temp1_input", "55800\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.cpu_temperature_evidence(),
+            Some(Evidence {
+                source: "/sys/class/hwmon/hwmon5/temp1_input".to_string(),
+                raw_value: Some("55800".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn cpu_temperature_evidence_none_when_no_matching_chip() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(hwmon_root(), vec![PathBuf::from("/sys/class/hwmon/hwmon0")]);
+        sysfs.set_content("/sys/class/hwmon/hwmon0/name", "acpitz\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(p.cpu_temperature_evidence(), None);
+    }
+
+    #[test]
+    fn cpu_temperature_evidence_present_even_when_value_is_implausible() {
+        // A bug-report tool should show the garbage value, not hide it just
+        // because the paired CapabilityState is Unknown.
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(hwmon_root(), vec![PathBuf::from("/sys/class/hwmon/hwmon5")]);
+        sysfs.set_content("/sys/class/hwmon/hwmon5/name", "k10temp\n");
+        sysfs.set_content("/sys/class/hwmon/hwmon5/temp1_input", "999900\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.cpu_temperature_evidence(),
+            Some(Evidence {
+                source: "/sys/class/hwmon/hwmon5/temp1_input".to_string(),
+                raw_value: Some("999900".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn igpu_temperature_evidence_names_amdgpu_hwmon_path() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(hwmon_root(), vec![PathBuf::from("/sys/class/hwmon/hwmon4")]);
+        sysfs.set_content("/sys/class/hwmon/hwmon4/name", "amdgpu\n");
+        sysfs.set_content("/sys/class/hwmon/hwmon4/temp1_input", "53000\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.gpu_temperature_evidence(GpuKind::Integrated),
+            Some(Evidence {
+                source: "/sys/class/hwmon/hwmon4/temp1_input".to_string(),
+                raw_value: Some("53000".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn dgpu_temperature_evidence_names_nvidia_smi_command_and_raw_output() {
+        let commands = MockCommandRunner::new();
+        commands.set_output(
+            "nvidia-smi",
+            &[
+                "--query-gpu=temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            "47\n",
+        );
+        let p = provider(MockSysfsReader::new(), commands);
+
+        assert_eq!(
+            p.gpu_temperature_evidence(GpuKind::Discrete),
+            Some(Evidence {
+                source: "nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits"
+                    .to_string(),
+                raw_value: Some("47".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn dgpu_temperature_evidence_none_when_nvidia_smi_missing() {
+        let p = provider(MockSysfsReader::new(), MockCommandRunner::new());
+
+        assert_eq!(p.gpu_temperature_evidence(GpuKind::Discrete), None);
+    }
+
+    #[test]
+    fn igpu_utilization_evidence_always_none_path_unconfirmed() {
+        let p = provider(MockSysfsReader::new(), MockCommandRunner::new());
+
+        assert_eq!(p.gpu_utilization_evidence(GpuKind::Integrated), None);
+    }
+
+    #[test]
+    fn dgpu_utilization_evidence_names_nvidia_smi_command() {
+        let commands = MockCommandRunner::new();
+        commands.set_output(
+            "nvidia-smi",
+            &[
+                "--query-gpu=utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            "12\n",
+        );
+        let p = provider(MockSysfsReader::new(), commands);
+
+        assert_eq!(
+            p.gpu_utilization_evidence(GpuKind::Discrete),
+            Some(Evidence {
+                source: "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits"
+                    .to_string(),
+                raw_value: Some("12".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn cpu_utilization_evidence_names_proc_stat_and_raw_cpu_line() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_content("/proc/stat", "cpu  100 0 100 800 0 0 0 0 0 0\nintr 0\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.cpu_utilization_evidence(),
+            Some(Evidence {
+                source: "/proc/stat".to_string(),
+                raw_value: Some("cpu  100 0 100 800 0 0 0 0 0 0".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn cpu_utilization_evidence_none_when_proc_stat_missing() {
+        let p = provider(MockSysfsReader::new(), MockCommandRunner::new());
+
+        assert_eq!(p.cpu_utilization_evidence(), None);
+    }
+
+    #[test]
+    fn cpu_frequency_evidence_lists_every_core_path_and_value() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/devices/system/cpu",
+            vec![
+                PathBuf::from("/sys/devices/system/cpu/cpu0"),
+                PathBuf::from("/sys/devices/system/cpu/cpu1"),
+            ],
+        );
+        sysfs.set_content(
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+            "3000000\n",
+        );
+        sysfs.set_content(
+            "/sys/devices/system/cpu/cpu1/cpufreq/scaling_cur_freq",
+            "4000000\n",
+        );
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.cpu_frequency_evidence(),
+            Some(Evidence {
+                source: "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq, \
+                          /sys/devices/system/cpu/cpu1/cpufreq/scaling_cur_freq"
+                    .to_string(),
+                raw_value: Some("3000000, 4000000".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn cpu_frequency_evidence_none_when_no_cpu_dirs_found() {
+        let p = provider(MockSysfsReader::new(), MockCommandRunner::new());
+
+        assert_eq!(p.cpu_frequency_evidence(), None);
+    }
+
+    #[test]
+    fn ram_usage_evidence_names_proc_meminfo_and_relevant_lines() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_content(
+            "/proc/meminfo",
+            "MemTotal:       16330000 kB\nMemFree:         2000000 kB\nMemAvailable:   10000000 kB\n",
+        );
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.ram_usage_evidence(),
+            Some(Evidence {
+                source: "/proc/meminfo".to_string(),
+                raw_value: Some(
+                    "MemTotal:       16330000 kB\nMemAvailable:   10000000 kB".to_string()
+                ),
+            })
+        );
+    }
+
+    #[test]
+    fn battery_evidence_names_uevent_path_and_redacts_serial_number() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/power_supply",
+            vec![PathBuf::from("/sys/class/power_supply/BAT1")],
+        );
+        sysfs.set_content(
+            "/sys/class/power_supply/BAT1/uevent",
+            "POWER_SUPPLY_STATUS=Discharging\nPOWER_SUPPLY_SERIAL_NUMBER=ABC123\nPOWER_SUPPLY_CAPACITY=87\n",
+        );
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        let evidence = p.battery_evidence().expect("evidence present");
+        assert_eq!(evidence.source, "/sys/class/power_supply/BAT1/uevent");
+        let raw = evidence.raw_value.expect("raw value present");
+        assert!(
+            raw.contains("POWER_SUPPLY_SERIAL_NUMBER=[REDACTED]"),
+            "{raw}"
+        );
+        assert!(!raw.contains("ABC123"), "{raw}");
+        assert!(raw.contains("POWER_SUPPLY_CAPACITY=87"), "{raw}");
+    }
+
+    #[test]
+    fn battery_evidence_none_when_no_battery_present() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/power_supply",
+            vec![PathBuf::from("/sys/class/power_supply/ACAD")],
+        );
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(p.battery_evidence(), None);
+    }
+
+    #[test]
+    fn fan_rpm_evidence_lists_every_fan_input_path_and_value() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(hwmon_root(), vec![PathBuf::from("/sys/class/hwmon/hwmon3")]);
+        sysfs.set_dir(
+            "/sys/class/hwmon/hwmon3",
+            vec![PathBuf::from("/sys/class/hwmon/hwmon3/fan1_input")],
+        );
+        sysfs.set_content("/sys/class/hwmon/hwmon3/fan1_input", "2400\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.fan_rpm_evidence(),
+            Some(Evidence {
+                source: "/sys/class/hwmon/hwmon3/fan1_input".to_string(),
+                raw_value: Some("2400".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn fan_rpm_evidence_none_when_no_fan_hwmon_anywhere() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(hwmon_root(), vec![PathBuf::from("/sys/class/hwmon/hwmon5")]);
+        sysfs.set_dir(
+            "/sys/class/hwmon/hwmon5",
+            vec![PathBuf::from("/sys/class/hwmon/hwmon5/temp1_input")],
+        );
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(p.fan_rpm_evidence(), None);
     }
 }

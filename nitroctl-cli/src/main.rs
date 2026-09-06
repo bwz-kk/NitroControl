@@ -89,13 +89,14 @@ enum BatteryCalibrateCommand {
 fn main() {
     let cli = Cli::parse();
     let sensor_provider = || dmi::build_sensor_provider(RealSysfsReader, RealCommandRunner);
+    let evidence_provider = || dmi::build_evidence_provider(RealSysfsReader, RealCommandRunner);
 
     let CommandOutput { text, exit_code } = match cli.command {
         Command::Status => run_status(sensor_provider().as_ref()),
         Command::Sensors => run_sensors(sensor_provider().as_ref()),
         Command::Battery => run_battery(sensor_provider().as_ref()),
         Command::Fans => run_fans(sensor_provider().as_ref()),
-        Command::Diagnose => run_diagnose(sensor_provider().as_ref()),
+        Command::Diagnose => run_diagnose(evidence_provider().as_ref()),
         Command::Profile(profile_command) => {
             // Connecting never hard-fails the CLI: on failure, FailedBackend
             // carries the *actual* connect() error through to the usual
