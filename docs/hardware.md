@@ -1,7 +1,9 @@
 # NitroControl — Hardware Discovery Report
 
 Target device: **Acer Nitro V15 (ANV15-41)**, BIOS V1.20 (10/23/2025), board `Sportage_RBH`.
-OS: CachyOS, kernel `7.2.2-1-cachyos`, Hyprland/Wayland.
+OS: CachyOS, kernel `7.2.2-1-cachyos`, Hyprland/Wayland. (Original discovery pass below stays dated to this OS for accuracy — see 2026-09-06 update.)
+
+**Update (2026-09-06):** host OS migrated to Omarchy, kernel `7.1.9-arch1-2` (stock Arch, gcc-built, no `-cachyos` suffix). M5 (`predator_v4=1` persistence, `platform_profile` udev rule), M6 (`acer-wmi-battery` DKMS install, autoload, `health_mode` udev rule) and M7 (`calibration_mode` presence) all re-verified live on this kernel: unprivileged `nitroctl acer-profile`/`battery-limit` get/set both directions, `nitroctl fans` — all match prior CachyOS behavior exactly. DKMS built and MOK-signed automatically (Secure Boot still disabled on this install, so the signature isn't currently enforced, but the module is signed regardless). No code changes needed for the OS switch — only host-state setup (modprobe.d, udev rules, DKMS) was redone.
 
 All findings below were gathered by direct, read-only inspection of this exact machine (`/sys`, `/proc`, `journalctl`, `lsmod`, `modinfo`, `nvidia-smi`, `sensors`, `systemctl`) on 2026-09-03. Nothing here is inferred from vendor documentation or other models unless explicitly labeled "documented, not verified."
 
