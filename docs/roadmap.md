@@ -136,6 +136,20 @@ Spec.md's Acceptance Criteria item "`nitroctl diagnose` output has been manually
 
 Also on 2026-09-06: a general-purpose subagent independently audited the whole repo against every M0-M7/FR-001-009 "done" claim in `spec.md`/`roadmap.md`/`architecture.md`/`hardware.md`/`cli.md` before M8 started — no discrepancies found (test counts, trait/CLI-surface existence, and capability-state honesty all matched documented claims exactly), giving a verified-clean baseline to build M8 against.
 
+Before merging, PR #13 was independently validated by two subagents: one confirmed functionality (191/191 tests, clippy/fmt clean, live-hardware evidence cross-checked, no logic bugs — caught one cosmetic test-count arithmetic error in this doc, fixed), the other searched for leaked secrets/PII in the diff (none found).
+
+## M9 — iGPU utilization (`gpu_utilization(Integrated)`) — done 2026-09-06
+
+Closed a M1 discovery-time gap (`hardware.md`'s original note): `gpu_busy_percent`/`pp_dpm_sclk` weren't found at `/sys/class/drm/card1/device/` because `card1` is this machine's NVIDIA dGPU, not the iGPU — the correct card was never disambiguated, so `gpu_utilization(Integrated)` returned a blanket `Unknown` since M1. No new FR needed — this fixes an existing `SensorProvider` method's implementation, not a new capability surface.
+
+Two candidate milestones were found during a fresh DISCOVER pass (also considered: CPU package power draw via `/sys/class/powercap/intel-rapl:0/energy_uj`, deferred — bigger scope, needs a new FR); this one was picked via `AskUserQuestion` for being smaller and closing an existing documented gap rather than adding a new capability.
+
+- `GenericLinux` gained `find_drm_card_by_driver()` — matches `/sys/class/drm/cardN` (filtering out `cardN-<connector>` siblings like `card2-eDP-1`) by `device/uevent`'s `DRIVER` field, since card numbering is boot-arbitrary (confirmed live: `card1`=`nvidia`, `card2`=`amdgpu` on this machine). `read_percent_with_raw()` mirrors `read_millidegrees_with_raw`'s single-source-of-truth pattern for `gpu_busy_percent`-style 0-100 sysfs values.
+- `gpu_utilization(Integrated)` now returns `Unsupported` (no amdgpu card found) or a real `Supported`/`Unknown` reading — never the old blanket `Unknown`, which conflated "not checked properly" with "checked, garbage value." `EvidenceProvider::gpu_utilization_evidence(Integrated)` updated to match (was always `None`).
+- 5 new tests (2 finding the right card + ignoring connector siblings, 1 unsupported, 1 malformed-value, 1 missing-`/sys/class/drm`; plus 2 evidence tests) — 196/196 workspace tests, clippy/fmt clean.
+- **Live-verified**: `nitroctl diagnose`'s iGPU utilization line matched a direct `cat /sys/class/drm/card2/device/gpu_busy_percent` exactly (`0` both ways); `nitroctl sensors`/`status` don't print GPU utilization at all (pre-existing, out of this milestone's scope — only `diagnose` surfaces it today).
+- `hardware.md` updated: iGPU utilization's discovery-report bullet and capability-matrix row both changed from `UNKNOWN` to `SUPPORTED`/`Yes`. `pp_dpm_sclk` (iGPU frequency) stays unexamined — no `gpu_frequency` capability exists in `SensorProvider` yet, out of scope here.
+
 ## M5+ — remaining re-evaluation items
 
 - **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.
