@@ -26,7 +26,7 @@ $ cat /sys/class/dmi/id/board_name → Sportage_RBH
 
 ### AMD iGPU (Radeon, integrated in the 7735HS)
 - `hwmon4` name `amdgpu`: `temp1_input`/`temp1_label`, `power1_input`/`power1_label`, `in0`/`in1` voltage rails (`vddgfx`, `vddnb` per `sensors`).
-- Utilization/frequency (`gpu_busy_percent`, `pp_dpm_sclk`) were **not found** at `/sys/class/drm/card1/device/` — this system has multiple DRM card nodes (`card1`, `card2` with many connectors including `eDP-1`); the correct card node for the iGPU device wasn't disambiguated this pass. **Status: UNKNOWN, not unsupported** — recheck via `udevadm info` / PCI bus matching at implementation time.
+- **Utilization: resolved (M9, 2026-09-06)**. `card1` was the NVIDIA dGPU (`DRIVER=nvidia`), not the iGPU — `card2` (`DRIVER=amdgpu`, confirmed via `device/uevent`) is the right node, and its `device/gpu_busy_percent` reads real values (`0`-`100`, no unit suffix). Card numbering is boot-arbitrary, so `nitroctl-core` matches by driver name, not a hardcoded `card1`/`card2` assumption. Live-verified: `nitroctl diagnose`'s iGPU utilization line matched a direct `cat` of `/sys/class/drm/card2/device/gpu_busy_percent` exactly. `pp_dpm_sclk` (iGPU frequency) remains unexamined — out of this milestone's scope (only `gpu_utilization` is part of `SensorProvider` today; a `gpu_frequency` capability doesn't exist yet).
 
 ### NVIDIA dGPU — GeForce RTX 4050 Laptop
 - Proprietary driver stack loaded: `nvidia`, `nvidia_drm`, `nvidia_modeset`, `nvidia_uvm`. `nvidia-powerd.service` active.
@@ -235,7 +235,7 @@ Follow-up to M6: `nitroctl-core`/`cli`/`gui` implemented `calibration_mode` (TDD
 | GPU temperature (iGPU) | SUPPORTED | SUPPORTED | N/A | `hwmon` `amdgpu` `temp1` | Yes |
 | CPU utilization | SUPPORTED | SUPPORTED | N/A | `/proc/stat` | Yes |
 | GPU utilization (dGPU) | SUPPORTED | SUPPORTED | N/A | NVML | Yes |
-| GPU utilization (iGPU) | UNKNOWN | UNKNOWN | N/A | expected `drm`/`amdgpu`, card path unconfirmed | No |
+| GPU utilization (iGPU) | SUPPORTED | SUPPORTED | N/A | `drm` `amdgpu` card, `gpu_busy_percent` | Yes |
 | CPU frequency | SUPPORTED | SUPPORTED | N/A | `cpufreq` sysfs | Yes |
 | GPU frequency (dGPU) | SUPPORTED | SUPPORTED | N/A | NVML | Yes |
 | GPU frequency (iGPU) | UNKNOWN | UNKNOWN | N/A | `pp_dpm_sclk` path unconfirmed | No |

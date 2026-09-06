@@ -48,6 +48,69 @@ impl<R: SysfsReader, C: CommandRunner> GenericLinux<R, C> {
         })
     }
 
+    /// Finds the first `cardN` directory (not a `cardN-<connector>` sibling)
+    /// under `/sys/class/drm` whose `device/uevent` names `driver_name` —
+    /// this machine has multiple DRM cards (iGPU + dGPU), and card numbering
+    /// is boot-arbitrary, so the driver name is the only reliable match
+    /// (see `hardware.md`'s M1 "recheck via udevadm info / PCI bus matching"
+    /// note, closed out here).
+    fn find_drm_card_by_driver(&self, driver_name: &str) -> Option<PathBuf> {
+        let entries = self.sysfs.read_dir(Path::new("/sys/class/drm")).ok()?;
+        entries
+            .into_iter()
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(is_drm_card_dir_name)
+                    .unwrap_or(false)
+            })
+            .find(|card| {
+                self.sysfs
+                    .read_to_string(&card.join("device").join("uevent"))
+                    .ok()
+                    .map(|raw| {
+                        parse_uevent(&raw)
+                            .get("DRIVER")
+                            .map(|d| d == driver_name)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            })
+    }
+
+    /// Reads a `gpu_busy_percent`-style sysfs file (0-100, no unit suffix)
+    /// into a `CapabilityState<Percent>`, also returning the raw content
+    /// when the read succeeded — same single-source-of-truth pattern as
+    /// `read_millidegrees_with_raw`.
+    fn read_percent_with_raw(&self, path: &Path) -> (CapabilityState<Percent>, Option<String>) {
+        match self.sysfs.read_to_string(path) {
+            Ok(raw) => {
+                let trimmed = raw.trim().to_string();
+                let state = match trimmed.parse::<f64>() {
+                    Ok(percent) if (0.0..=100.0).contains(&percent) => {
+                        CapabilityState::Supported(Percent(percent))
+                    }
+                    _ => CapabilityState::Unknown,
+                };
+                (state, Some(trimmed))
+            }
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                (CapabilityState::RequiresPrivilege, None)
+            }
+            Err(_) => (CapabilityState::Unknown, None),
+        }
+    }
+
+    fn gpu_utilization_integrated(&self) -> CapabilityState<Percent> {
+        match self.find_drm_card_by_driver("amdgpu") {
+            Some(card) => {
+                self.read_percent_with_raw(&card.join("device").join("gpu_busy_percent"))
+                    .0
+            }
+            None => CapabilityState::Unsupported,
+        }
+    }
+
     /// Reads a millidegree-Celsius sysfs file (e.g. `temp1_input`) into a
     /// `CapabilityState<Celsius>`, distinguishing permission and parse errors.
     fn read_millidegrees(&self, path: &Path) -> CapabilityState<Celsius> {
@@ -135,6 +198,12 @@ fn is_cpu_dir_name(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_drm_card_dir_name(name: &str) -> bool {
+    name.strip_prefix("card")
+        .map(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
 fn is_fan_input_name(name: &str) -> bool {
     name.strip_prefix("fan")
         .and_then(|rest| rest.strip_suffix("_input"))
@@ -218,9 +287,10 @@ impl<R: SysfsReader, C: CommandRunner> SensorProvider for GenericLinux<R, C> {
 
     fn gpu_utilization(&self, gpu: GpuKind) -> CapabilityState<Percent> {
         match gpu {
-            // Per docs/hardware.md: the amdgpu busy-percent sysfs path was not
-            // confirmed on the target machine, so this is explicitly Unknown.
-            GpuKind::Integrated => CapabilityState::Unknown,
+            // M9: the amdgpu DRM card is found by matching device/uevent's
+            // DRIVER field (card numbering is boot-arbitrary — hardware.md's
+            // M1 note this closes out), then gpu_busy_percent read from it.
+            GpuKind::Integrated => self.gpu_utilization_integrated(),
             GpuKind::Discrete => self.gpu_utilization_discrete(),
         }
     }
@@ -419,9 +489,15 @@ impl<R: SysfsReader, C: CommandRunner> EvidenceProvider for GenericLinux<R, C> {
 
     fn gpu_utilization_evidence(&self, gpu: GpuKind) -> Option<Evidence> {
         match gpu {
-            // No confirmed sysfs path on this hardware (see gpu_utilization
-            // above) — nothing to point at, so no evidence either.
-            GpuKind::Integrated => None,
+            GpuKind::Integrated => {
+                let card = self.find_drm_card_by_driver("amdgpu")?;
+                let path = card.join("device").join("gpu_busy_percent");
+                let (_, raw) = self.read_percent_with_raw(&path);
+                raw.map(|raw_value| Evidence {
+                    source: path.display().to_string(),
+                    raw_value: Some(raw_value),
+                })
+            }
             GpuKind::Discrete => {
                 let (_, raw) = self.nvidia_smi_metric_with_raw("--query-gpu=utilization.gpu");
                 raw.map(|raw_value| Evidence {
@@ -730,10 +806,100 @@ mod tests {
     // ---- gpu_utilization(Integrated) ----
 
     #[test]
-    fn igpu_utilization_is_unknown_path_unconfirmed() {
-        // Per docs/hardware.md: the amdgpu busy-percent sysfs path wasn't
-        // confirmed on this machine, so this is Unknown, not Unsupported.
+    fn igpu_utilization_reads_gpu_busy_percent_from_amdgpu_drm_card() {
+        // M9: card numbering is boot-arbitrary and this machine has two DRM
+        // cards (nvidia dGPU + amdgpu iGPU) — must match by driver, not by
+        // assuming card1/card2 (hardware.md's M1 note, closed out here).
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/drm",
+            vec![
+                PathBuf::from("/sys/class/drm/card1"),
+                PathBuf::from("/sys/class/drm/card2"),
+            ],
+        );
+        sysfs.set_content(
+            "/sys/class/drm/card1/device/uevent",
+            "DRIVER=nvidia\nPCI_ID=10DE:28A1\n",
+        );
+        sysfs.set_content(
+            "/sys/class/drm/card2/device/uevent",
+            "DRIVER=amdgpu\nPCI_ID=1002:1681\n",
+        );
+        sysfs.set_content("/sys/class/drm/card2/device/gpu_busy_percent", "3\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.gpu_utilization(GpuKind::Integrated),
+            CapabilityState::Supported(Percent(3.0))
+        );
+    }
+
+    #[test]
+    fn igpu_utilization_ignores_non_card_drm_entries_like_connector_siblings() {
+        // /sys/class/drm also lists cardN-<connector> siblings (e.g.
+        // card2-eDP-1) alongside cardN itself — must not be mistaken for a
+        // second card.
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/drm",
+            vec![
+                PathBuf::from("/sys/class/drm/card2"),
+                PathBuf::from("/sys/class/drm/card2-eDP-1"),
+            ],
+        );
+        sysfs.set_content(
+            "/sys/class/drm/card2/device/uevent",
+            "DRIVER=amdgpu\nPCI_ID=1002:1681\n",
+        );
+        sysfs.set_content("/sys/class/drm/card2/device/gpu_busy_percent", "7\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.gpu_utilization(GpuKind::Integrated),
+            CapabilityState::Supported(Percent(7.0))
+        );
+    }
+
+    #[test]
+    fn igpu_utilization_unsupported_when_no_amdgpu_card_found() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/drm",
+            vec![PathBuf::from("/sys/class/drm/card1")],
+        );
+        sysfs.set_content("/sys/class/drm/card1/device/uevent", "DRIVER=nvidia\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.gpu_utilization(GpuKind::Integrated),
+            CapabilityState::Unsupported
+        );
+    }
+
+    #[test]
+    fn igpu_utilization_unsupported_when_drm_class_missing() {
         let p = provider(MockSysfsReader::new(), MockCommandRunner::new());
+
+        assert_eq!(
+            p.gpu_utilization(GpuKind::Integrated),
+            CapabilityState::Unsupported
+        );
+    }
+
+    #[test]
+    fn igpu_utilization_unknown_on_malformed_value() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/drm",
+            vec![PathBuf::from("/sys/class/drm/card2")],
+        );
+        sysfs.set_content("/sys/class/drm/card2/device/uevent", "DRIVER=amdgpu\n");
+        sysfs.set_content(
+            "/sys/class/drm/card2/device/gpu_busy_percent",
+            "not-a-number\n",
+        );
+        let p = provider(sysfs, MockCommandRunner::new());
 
         assert_eq!(
             p.gpu_utilization(GpuKind::Integrated),
@@ -1136,7 +1302,27 @@ mod tests {
     }
 
     #[test]
-    fn igpu_utilization_evidence_always_none_path_unconfirmed() {
+    fn igpu_utilization_evidence_names_amdgpu_card_path_and_raw_value() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_dir(
+            "/sys/class/drm",
+            vec![PathBuf::from("/sys/class/drm/card2")],
+        );
+        sysfs.set_content("/sys/class/drm/card2/device/uevent", "DRIVER=amdgpu\n");
+        sysfs.set_content("/sys/class/drm/card2/device/gpu_busy_percent", "3\n");
+        let p = provider(sysfs, MockCommandRunner::new());
+
+        assert_eq!(
+            p.gpu_utilization_evidence(GpuKind::Integrated),
+            Some(Evidence {
+                source: "/sys/class/drm/card2/device/gpu_busy_percent".to_string(),
+                raw_value: Some("3".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn igpu_utilization_evidence_none_when_no_amdgpu_card_found() {
         let p = provider(MockSysfsReader::new(), MockCommandRunner::new());
 
         assert_eq!(p.gpu_utilization_evidence(GpuKind::Integrated), None);
