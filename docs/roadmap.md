@@ -232,6 +232,17 @@ Continuing the UI-research pass: the user supplied two more reference screenshot
 - No `nitroctl-core`/`nitroctl-cli` changes. 209/209 tests unaffected, clippy/fmt clean.
 - Runtime-verified: launched the real binary, 4+ poll ticks exercising the new tab stack and profile pills against real `power-profiles-daemon` data — no panics, no GTK-critical warnings, clean shutdown.
 
+## M16 — GUI theme: adopt real design-system tokens — done 2026-09-06
+
+M15's cyan-blue theme was an ad-hoc pick with no source of truth. The user had a real design-system project ("Nocturne") on their claude.ai/design account — read its `theme.json`/`styles.css` directly and swapped the ad-hoc values for its actual documented tokens.
+
+- `main.rs::apply_style()`: ground `#161826`, surface `#232532`, text `#e9e9ed`, accent `#9184d9` (a blurple), accent-600 `#796cbf` for tinted fills, accent-100 `#f5f4ff` for text-on-tint — all pulled verbatim from Nocturne's `styles.css` `:root` block, not eyeballed. `@define-color` now also covers `window_bg_color`/`view_bg_color`/`headerbar_bg_color`/`card_bg_color` (M15 only touched the three accent variables), so the whole app's ground now matches the source tokens, not just the accent.
+- **Followed the source system's own documented interaction pattern** rather than inventing one: Nocturne's readme is explicit that "the accent is used as a line and a glow, never a flood" — its own `.btn-primary:active` is a translucent accent tint plus a solid accent border, never a filled block. The `button:checked` rule (needed since Adwaita's stock togglebutton state doesn't route through the named accent colors, per M15) now matches that: `rgba(145, 132, 217, 0.22)` tint + `#9184d9` border, replacing M15's flat cyan fill.
+- **Real finding**: GTK4's CSS engine has no `color-mix()` (Nocturne's own stylesheet uses it freely, since it's real browser CSS) — the tint had to be spelled out as a literal `rgba()` triple computed from the accent hex, not copied as a CSS expression.
+- `Sparkline`/`Gauge`'s hardcoded "activity" color (Cairo-drawn, not CSS-driven) updated from M15's cyan to the same `#9184d9` accent, so the whole app still reads as one consistent color, now sourced from Nocturne instead of a guess. Thermal-gauge orange is untouched (a plain visual distinction between metric kinds, not a Nocturne-owned color).
+- No `nitroctl-core`/`nitroctl-cli` changes. 209/209 tests unaffected, clippy/fmt clean.
+- **Live-verified visually** (screenshot): ground color matches Nocturne's `#161826` exactly, the active profile pill and active tab both show the accent tint+border pattern, thermal gauges still orange as intended.
+
 ## M5+ — remaining re-evaluation items
 
 - **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.

@@ -52,10 +52,11 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const SPARKLINE_HISTORY_LEN: usize = 30;
 const SPARKLINE_WIDTH: i32 = 80;
 const SPARKLINE_HEIGHT: i32 = 24;
-/// M15: the app's own forced accent color (`#00d4e0`, `main.rs::apply_style`)
-/// — legible on both the light and dark Adwaita row backgrounds without
-/// querying the active theme, and consistent with every other accent use.
-const SPARKLINE_LINE_RGB: (f64, f64, f64) = (0.0, 0.831, 0.878);
+/// M16: the app's own forced accent color (Nocturne's `#9184d9`,
+/// `main.rs::apply_style`) — legible on both the light and dark Adwaita
+/// row backgrounds without querying the active theme, and consistent with
+/// every other accent use.
+const SPARKLINE_LINE_RGB: (f64, f64, f64) = (0.569, 0.518, 0.851);
 const SPARKLINE_FILL_ALPHA: f64 = 0.15;
 
 /// A small inline history graph, mocking up Mission Center/Resources-style
@@ -296,9 +297,9 @@ fn celsius_value(state: &CapabilityState<Celsius>) -> Option<f64> {
 /// distinction from the utilization gauges' cooler blue, not a fabricated
 /// safety threshold (SAFE-004: this project doesn't define one).
 const GAUGE_THERMAL_RGB: (f64, f64, f64) = (0.902, 0.494, 0.133);
-/// Same forced accent cyan as the sparkline — used for the two utilization
-/// gauges.
-const GAUGE_ACTIVITY_RGB: (f64, f64, f64) = (0.0, 0.831, 0.878);
+/// Same forced accent (Nocturne's blurple) as the sparkline — used for the
+/// two utilization gauges.
+const GAUGE_ACTIVITY_RGB: (f64, f64, f64) = (0.569, 0.518, 0.851);
 /// Laptop CPU/GPU temperatures very rarely exceed 100°C before thermal
 /// throttling/shutdown — a natural, intuitive gauge ceiling, matching the
 /// reference dashboard's own 0-100 temperature gauges.
