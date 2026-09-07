@@ -21,6 +21,18 @@ pub enum ProviderKind {
     GenericLinux,
 }
 
+/// Reads the raw DMI `product_name` string, trimmed — for display purposes
+/// (M17's GUI header pill and System-tab footer), not for provider
+/// selection (see `detect_provider_kind`, which does its own read). `None`
+/// when the file is missing/unreadable, same "absence isn't an error" stance.
+pub fn product_name(sysfs: &impl SysfsReader) -> Option<String> {
+    sysfs
+        .read_to_string(Path::new(DMI_PRODUCT_NAME_PATH))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Reads DMI `product_name` and decides which provider matches this machine.
 /// A missing or unreadable DMI file is not an error here — it just means we
 /// can't identify Acer-specific hardware, so we fall back to `GenericLinux`.
@@ -67,6 +79,23 @@ mod tests {
     use super::*;
     use crate::command::mock::MockCommandRunner;
     use crate::sysfs::mock::MockSysfsReader;
+
+    #[test]
+    fn product_name_returns_trimmed_string() {
+        let sysfs = MockSysfsReader::new();
+        sysfs.set_content(DMI_PRODUCT_NAME_PATH, "Nitro ANV15-41\n");
+
+        assert_eq!(product_name(&sysfs), Some("Nitro ANV15-41".to_string()));
+    }
+
+    #[test]
+    fn product_name_none_when_missing_or_empty() {
+        let sysfs = MockSysfsReader::new();
+        assert_eq!(product_name(&sysfs), None);
+
+        sysfs.set_content(DMI_PRODUCT_NAME_PATH, "\n");
+        assert_eq!(product_name(&sysfs), None);
+    }
 
     #[test]
     fn detects_acer_nitro_v15_by_exact_product_name() {
