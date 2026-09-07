@@ -177,6 +177,33 @@ Following a UI-research pass (web search for well-designed GTK4/libadwaita and l
 
 Only this one row was mocked up, per explicit scope — a template for extending the same `Sparkline` type to other numeric rows (iGPU/dGPU temp, CPU utilization, power draw) later if desired.
 
+## M12 — GUI: editable Power Profile / Acer Firmware Profile / Battery Charge Limit rows — done 2026-09-06
+
+Turned three read-only dashboard rows into real interactive controls — the user can now change power profile or toggle the battery charge limit from the GUI, no `nitroctl ... set` command needed.
+
+A research subagent (WebSearch/WebFetch against docs.rs, GNOME's own libadwaita docs, GTK's official docs) confirmed the exact gtk4-rs 0.11 / libadwaita-rs 0.9 API before any code was written — corrected two assumptions along the way: the write method is `PowerProfileProvider::set_profile(&str)`, not `set_active_profile` (that name is one layer down, on `PowerProfilesBackend`); and `list_profiles()` already exists and should populate the combo model live, not a hardcoded profile list.
+
+- **`AdwComboRow`** for `power_profile` and `acer_profile` (both use the same new `ProfileRow` type) — the idiomatic Adwaita "pick one of N named options" row, same one GNOME Settings itself uses. Model is a `gtk4::StringList` built from the provider's own `list_profiles()`, so it reflects whatever the real backend reports rather than an assumed fixed set.
+- **`AdwSwitchRow`** for `battery_limit` (new `BatteryLimitRow` type) — the standard boolean-toggle preferences row.
+- **Poll-feedback guard**: reused this file's existing `Cell<bool>` idiom (the same shape `poll_in_flight` already uses) rather than `glib::SignalHandlerId`/`block_signal` bookkeeping — set immediately before the poll loop's own `set_model`/`set_selected`/`set_active` calls, checked at the top of the `notify::selected`/`notify::active` handlers, so a poll-driven update never gets mistaken for a real user click.
+- **No manual revert-on-failure needed**: a failed write shows an `AdwToast` (a new shared `adw::ToastOverlay` wraps the page), and the next poll tick (≤2s later) always re-syncs the row to whatever the backend actually reports — simpler than threading a "last known good" value through the write path, and correct because the poll loop is already the single source of truth for every row.
+- `battery_calibration` was deliberately **not** touched — stays read-only, per M7's explicit safety design (a 12+ hour, no-abort-signal operation should not be one accidental switch-click away).
+- Writes run via the same `gio::spawn_blocking` + `glib::MainContext::spawn_local` pattern the poll loop already uses, never blocking the GTK main thread.
+- No `nitroctl-core`/`nitroctl-cli` changes — this is GUI-only, reusing existing provider traits/methods unchanged. 209/209 workspace tests unaffected, clippy/fmt clean.
+- Runtime-verified: launched the real binary, let it run 4+ poll ticks with the real `power-profiles-daemon` backend (genuinely `Supported`, so the combo model gets rebuilt and re-selected every tick) — no panics, no GTK-critical warnings, clean shutdown. `acer_profile`/`battery_limit`'s actual write paths need `predator_v4=1`/the out-of-tree driver loaded respectively (neither active on this machine right now) to exercise for real — a live click-through of all three rows was left to the user, since this session's compositor's non-standard Lua-based `hyprctl dispatch` layer blocked scripted window automation (same friction noted in M11).
+
+## M13 — GUI: vertical layout + Alienware-Command-Center-style gauges — done 2026-09-06
+
+Continuing the UI-research pass (M11), the user pointed at two more concrete references: the `Packss/Linux-NitroSense` clone's actual screenshots (500×700 portrait, bordered titled group boxes, red-accent active-state highlighting) and a Dell Alienware Command Center overview screenshot (four big circular gauges — CPU/GPU temp and fan speed — with a 270° "speedometer" sweep, color-coded arcs, profile tabs along the top).
+
+- **Window made clearly vertical**: `default_width`/`default_height` changed from `480x640` to `400x760` — narrower and taller, matching the reference apps' portrait-panel feel rather than a wide dashboard. (Confirmed live: this session's compositor uses a scrolling-tiling layout that overrides requested window size regardless of what the app asks for — the code correctly requests the vertical proportion either way, and it'll show properly in floating mode or under a non-tiling WM.)
+- **New `Gauge`/`GaugeRow` types**: same "plain `DrawingArea` + Cairo, no charting dependency" approach as M11's `Sparkline`. A 270°-sweep arc gauge with a big centered number and unit label, using Cairo's toy text API (`select_font_face`/`show_text`/`text_extents`) rather than pulling in `pangocairo` — fine here since the only text is ASCII digits and `°C`/`%`, no i18n/shaping need.
+- **Four headline gauges** in a new "Overview" `PreferencesGroup` at the top of the page (2×2 grid): CPU Temp, dGPU Temp, CPU Load, dGPU Load — chosen because they're the four metrics that are `Supported` (not `Unsupported`/gated behind `predator_v4=1`) on stock hardware by default, unlike e.g. Fan RPM, so the headline dashboard isn't empty-looking out of the box.
+- **Color is a plain visual distinction, not a fabricated safety signal** (SAFE-004 spirit): temperature gauges get one fixed warm-orange tint, utilization gauges one fixed cool-blue tint (GNOME's own accent, matching the sparkline) — deliberately not a green/yellow/red severity gradient, since this project hasn't validated any such thresholds and won't imply one it can't back with evidence.
+- The existing per-metric rows (including M11's sparkline row) are untouched below the new Overview section — the gauges are an additional at-a-glance summary, not a replacement.
+- No `nitroctl-core`/`nitroctl-cli` changes. 209/209 tests unaffected, clippy/fmt clean.
+- Runtime-verified: launched the real binary, 4+ poll ticks with the gauge-drawing code exercising real live data — no panics, no GTK-critical warnings, clean shutdown. A full visual/click-through check was again left to the user, for the same WM-automation reason noted in M11/M12.
+
 ## M5+ — remaining re-evaluation items
 
 - **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.
