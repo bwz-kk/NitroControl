@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk4::{gio, glib, DrawingArea};
+use gtk4::{cairo, gio, glib, DrawingArea};
 use libadwaita as adw;
 
 use nitroctl_core::battery_calibration::BatteryCalibrationProvider;
@@ -39,7 +39,7 @@ use nitroctl_core::power_profile::{
     AcerPlatformProfileBackend, FailedBackend, PowerProfileProvider, PowerProfilesDaemon,
     ProfileError, ZbusPowerProfilesBackend,
 };
-use nitroctl_core::sensor::{Celsius, GpuKind, SensorProvider};
+use nitroctl_core::sensor::{Celsius, GpuKind, Percent, SensorProvider};
 use nitroctl_core::sysfs::RealSysfsReader;
 
 use crate::format::{self, RowContent};
@@ -142,6 +142,142 @@ impl Sparkline {
     }
 }
 
+const GAUGE_DIAMETER: i32 = 92;
+const GAUGE_ARC_WIDTH: f64 = 7.0;
+const GAUGE_TRACK_RGBA: (f64, f64, f64, f64) = (0.5, 0.5, 0.5, 0.25);
+const GAUGE_LABEL_RGB: (f64, f64, f64) = (0.5, 0.5, 0.5);
+/// A 270° sweep with the gap at the bottom — the common "speedometer" gauge
+/// convention (Alienware Command Center's own dashboard, one of this
+/// milestone's UI references, uses this exact shape).
+const GAUGE_START_ANGLE: f64 = 0.75 * std::f64::consts::PI; // 135°
+const GAUGE_SWEEP: f64 = 1.5 * std::f64::consts::PI; // 270°
+
+/// A circular gauge (M13, Alienware-Command-Center-style), replacing plain
+/// text for a few headline metrics. Same "plain `DrawingArea` + Cairo, no
+/// extra dependency" approach as `Sparkline` — Cairo's toy text API is used
+/// for the centered number/unit (no shaping/i18n needs here, just ASCII
+/// digits and `°C`/`%`), so no new crate (e.g. pangocairo) is pulled in.
+struct Gauge {
+    widget: DrawingArea,
+    value: Rc<Cell<Option<f64>>>,
+}
+
+impl Gauge {
+    /// `max_value` scales the arc (a reading at or above it draws a full
+    /// sweep); `unit` is appended under the number (`"°C"`/`"%"`); `color`
+    /// tints both the arc and the number, distinguishing gauge kinds (e.g.
+    /// temperature vs. utilization) rather than implying a safety threshold
+    /// this project hasn't validated (SAFE-004: no fabricated meaning).
+    fn new(max_value: f64, unit: &'static str, color: (f64, f64, f64)) -> Self {
+        let value: Rc<Cell<Option<f64>>> = Rc::new(Cell::new(None));
+        let widget = DrawingArea::new();
+        widget.set_content_width(GAUGE_DIAMETER);
+        widget.set_content_height(GAUGE_DIAMETER);
+
+        let draw_value = value.clone();
+        widget.set_draw_func(move |_area, cr, width, height| {
+            let cx = width as f64 / 2.0;
+            let cy = height as f64 / 2.0;
+            let radius = (width.min(height) as f64 / 2.0) - GAUGE_ARC_WIDTH;
+
+            cr.set_line_width(GAUGE_ARC_WIDTH);
+            cr.set_line_cap(cairo::LineCap::Round);
+
+            let (tr, tg, tb, ta) = GAUGE_TRACK_RGBA;
+            cr.set_source_rgba(tr, tg, tb, ta);
+            cr.arc(
+                cx,
+                cy,
+                radius,
+                GAUGE_START_ANGLE,
+                GAUGE_START_ANGLE + GAUGE_SWEEP,
+            );
+            let _ = cr.stroke();
+
+            let (r, g, b) = color;
+            let value = draw_value.get();
+            if let Some(v) = value {
+                let fraction = (v / max_value).clamp(0.0, 1.0);
+                cr.set_source_rgba(r, g, b, 1.0);
+                cr.arc(
+                    cx,
+                    cy,
+                    radius,
+                    GAUGE_START_ANGLE,
+                    GAUGE_START_ANGLE + GAUGE_SWEEP * fraction,
+                );
+                let _ = cr.stroke();
+            }
+
+            let number_text = match value {
+                Some(v) => format!("{v:.0}"),
+                None => "--".to_string(),
+            };
+            cr.set_source_rgba(r, g, b, 1.0);
+            cr.select_font_face(
+                "sans-serif",
+                cairo::FontSlant::Normal,
+                cairo::FontWeight::Bold,
+            );
+            cr.set_font_size(radius * 0.55);
+            if let Ok(extents) = cr.text_extents(&number_text) {
+                cr.move_to(
+                    cx - extents.width() / 2.0 - extents.x_bearing(),
+                    cy - extents.height() / 2.0 - extents.y_bearing(),
+                );
+                let _ = cr.show_text(&number_text);
+            }
+
+            if value.is_some() {
+                let (lr, lg, lb) = GAUGE_LABEL_RGB;
+                cr.set_source_rgba(lr, lg, lb, 1.0);
+                cr.select_font_face(
+                    "sans-serif",
+                    cairo::FontSlant::Normal,
+                    cairo::FontWeight::Normal,
+                );
+                cr.set_font_size(radius * 0.22);
+                if let Ok(extents) = cr.text_extents(unit) {
+                    cr.move_to(
+                        cx - extents.width() / 2.0 - extents.x_bearing(),
+                        cy + radius * 0.4,
+                    );
+                    let _ = cr.show_text(unit);
+                }
+            }
+        });
+
+        Self { widget, value }
+    }
+
+    fn set_value(&self, v: Option<f64>) {
+        self.value.set(v);
+        self.widget.queue_draw();
+    }
+}
+
+/// One gauge plus its title label, stacked vertically to match the
+/// reference dashboards (a big dial with a short caption underneath).
+struct GaugeRow {
+    container: gtk4::Box,
+    gauge: Gauge,
+}
+
+impl GaugeRow {
+    fn new(title: &str, max_value: f64, unit: &'static str, color: (f64, f64, f64)) -> Self {
+        let gauge = Gauge::new(max_value, unit, color);
+        let label = gtk4::Label::new(Some(title));
+        label.add_css_class("caption-heading");
+
+        let container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        container.set_halign(gtk4::Align::Center);
+        container.append(&gauge.widget);
+        container.append(&label);
+
+        Self { container, gauge }
+    }
+}
+
 /// Extracts the raw numeric value from a `Celsius` capability state for the
 /// sparkline, when there's one to plot — `Unsupported`/`Unknown`/
 /// `RequiresPrivilege` have no value, and are simply skipped (the sparkline
@@ -149,6 +285,30 @@ impl Sparkline {
 fn celsius_value(state: &CapabilityState<Celsius>) -> Option<f64> {
     match state {
         CapabilityState::Supported(Celsius(v)) | CapabilityState::HardwareDependent(Celsius(v)) => {
+            Some(*v)
+        }
+        _ => None,
+    }
+}
+
+/// Warm orange, used for the two temperature gauges — a plain visual
+/// distinction from the utilization gauges' cooler blue, not a fabricated
+/// safety threshold (SAFE-004: this project doesn't define one).
+const GAUGE_THERMAL_RGB: (f64, f64, f64) = (0.902, 0.494, 0.133);
+/// GNOME's default accent blue, same as the sparkline — used for the two
+/// utilization gauges.
+const GAUGE_ACTIVITY_RGB: (f64, f64, f64) = (0.208, 0.518, 0.894);
+/// Laptop CPU/GPU temperatures very rarely exceed 100°C before thermal
+/// throttling/shutdown — a natural, intuitive gauge ceiling, matching the
+/// Alienware Command Center reference's own 0-100 temperature gauges.
+const GAUGE_TEMPERATURE_MAX: f64 = 100.0;
+const GAUGE_PERCENT_MAX: f64 = 100.0;
+
+/// Extracts the raw numeric value from a `Percent` capability state, same
+/// reasoning as `celsius_value` above.
+fn percent_value(state: &CapabilityState<Percent>) -> Option<f64> {
+    match state {
+        CapabilityState::Supported(Percent(v)) | CapabilityState::HardwareDependent(Percent(v)) => {
             Some(*v)
         }
         _ => None,
@@ -215,9 +375,14 @@ struct Snapshot {
     cpu_temperature_value: Option<f64>,
     igpu_temperature: RowContent,
     dgpu_temperature: RowContent,
+    /// M13 gauge value — same metric `dgpu_temperature` already carries as
+    /// text, just also plotted on the "dGPU Temp" overview gauge.
+    dgpu_temperature_value: Option<f64>,
     cpu_utilization: RowContent,
+    cpu_utilization_value: Option<f64>,
     igpu_utilization: RowContent,
     dgpu_utilization: RowContent,
+    dgpu_utilization_value: Option<f64>,
     cpu_frequency: RowContent,
     ram_usage: RowContent,
     battery: RowContent,
@@ -275,18 +440,24 @@ fn take_snapshot(
     power_draw: &dyn PowerDrawProvider,
 ) -> Snapshot {
     let cpu_temperature_state = sensors.cpu_temperature();
+    let dgpu_temperature_state = sensors.gpu_temperature(GpuKind::Discrete);
+    let cpu_utilization_state = sensors.cpu_utilization();
+    let dgpu_utilization_state = sensors.gpu_utilization(GpuKind::Discrete);
     Snapshot {
         cpu_temperature_value: celsius_value(&cpu_temperature_state),
         cpu_temperature: format::cpu_temperature_row(&cpu_temperature_state),
         igpu_temperature: format::gpu_temperature_row(
             &sensors.gpu_temperature(GpuKind::Integrated),
         ),
-        dgpu_temperature: format::gpu_temperature_row(&sensors.gpu_temperature(GpuKind::Discrete)),
-        cpu_utilization: format::cpu_utilization_row(&sensors.cpu_utilization()),
+        dgpu_temperature_value: celsius_value(&dgpu_temperature_state),
+        dgpu_temperature: format::gpu_temperature_row(&dgpu_temperature_state),
+        cpu_utilization_value: percent_value(&cpu_utilization_state),
+        cpu_utilization: format::cpu_utilization_row(&cpu_utilization_state),
         igpu_utilization: format::gpu_utilization_row(
             &sensors.gpu_utilization(GpuKind::Integrated),
         ),
-        dgpu_utilization: format::gpu_utilization_row(&sensors.gpu_utilization(GpuKind::Discrete)),
+        dgpu_utilization_value: percent_value(&dgpu_utilization_state),
+        dgpu_utilization: format::gpu_utilization_row(&dgpu_utilization_state),
         cpu_frequency: format::cpu_frequency_row(&sensors.cpu_frequency()),
         ram_usage: format::ram_usage_row(&sensors.ram_usage()),
         battery: format::battery_row(&sensors.battery()),
@@ -515,6 +686,11 @@ impl BatteryLimitRow {
 }
 
 struct Dashboard {
+    /// M13: the four headline-metric gauges shown above every other group.
+    cpu_temperature_gauge: Gauge,
+    dgpu_temperature_gauge: Gauge,
+    cpu_utilization_gauge: Gauge,
+    dgpu_utilization_gauge: Gauge,
     cpu_temperature: DashboardRow,
     cpu_temperature_sparkline: Sparkline,
     igpu_temperature: DashboardRow,
@@ -535,6 +711,15 @@ struct Dashboard {
 
 impl Dashboard {
     fn apply(&self, snapshot: &Snapshot) {
+        self.cpu_temperature_gauge
+            .set_value(snapshot.cpu_temperature_value);
+        self.dgpu_temperature_gauge
+            .set_value(snapshot.dgpu_temperature_value);
+        self.cpu_utilization_gauge
+            .set_value(snapshot.cpu_utilization_value);
+        self.dgpu_utilization_gauge
+            .set_value(snapshot.dgpu_utilization_value);
+
         self.cpu_temperature.update(&snapshot.cpu_temperature);
         if let Some(value) = snapshot.cpu_temperature_value {
             self.cpu_temperature_sparkline.push(value);
@@ -575,6 +760,27 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let profile_provider = build_profile_provider();
     let acer_profile_provider = build_acer_profile_provider();
     let battery_limit_provider = build_battery_limit_provider();
+
+    // M13: four headline gauges, Alienware-Command-Center-style, above
+    // every other group.
+    let cpu_temperature_row =
+        GaugeRow::new("CPU Temp", GAUGE_TEMPERATURE_MAX, "°C", GAUGE_THERMAL_RGB);
+    let dgpu_temperature_row =
+        GaugeRow::new("dGPU Temp", GAUGE_TEMPERATURE_MAX, "°C", GAUGE_THERMAL_RGB);
+    let cpu_utilization_row = GaugeRow::new("CPU Load", GAUGE_PERCENT_MAX, "%", GAUGE_ACTIVITY_RGB);
+    let dgpu_utilization_row =
+        GaugeRow::new("dGPU Load", GAUGE_PERCENT_MAX, "%", GAUGE_ACTIVITY_RGB);
+    let gauge_grid = gtk4::Grid::builder()
+        .row_spacing(8)
+        .column_spacing(8)
+        .halign(gtk4::Align::Center)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    gauge_grid.attach(&cpu_temperature_row.container, 0, 0, 1, 1);
+    gauge_grid.attach(&dgpu_temperature_row.container, 1, 0, 1, 1);
+    gauge_grid.attach(&cpu_utilization_row.container, 0, 1, 1, 1);
+    gauge_grid.attach(&dgpu_utilization_row.container, 1, 1, 1, 1);
 
     let cpu_temperature = DashboardRow::new("CPU Temperature");
     let cpu_temperature_sparkline = Sparkline::new();
@@ -644,7 +850,11 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         ],
     );
 
+    let overview_group = adw::PreferencesGroup::builder().title("Overview").build();
+    overview_group.add(&gauge_grid);
+
     let page = adw::PreferencesPage::new();
+    page.add(&overview_group);
     page.add(&cpu_group);
     page.add(&gpu_group);
     page.add(&memory_group);
@@ -662,12 +872,19 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("NitroControl")
-        .default_width(480)
-        .default_height(640)
+        // M13: narrower/taller than before (was 480x640) -- a clearly
+        // vertical/portrait proportion, matching the NitroSense/PredatorSense
+        // reference UIs' own tall-panel layout rather than a wide dashboard.
+        .default_width(400)
+        .default_height(760)
         .content(&toolbar_view)
         .build();
 
     let dashboard = Rc::new(Dashboard {
+        cpu_temperature_gauge: cpu_temperature_row.gauge,
+        dgpu_temperature_gauge: dgpu_temperature_row.gauge,
+        cpu_utilization_gauge: cpu_utilization_row.gauge,
+        dgpu_utilization_gauge: dgpu_utilization_row.gauge,
         cpu_temperature,
         cpu_temperature_sparkline,
         igpu_temperature,
