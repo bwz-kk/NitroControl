@@ -8,9 +8,9 @@ use libadwaita as adw;
 const APP_ID: &str = "io.github.nitrocontrol.NitroControl";
 
 /// M15 follow-up: force dark mode and recolor Adwaita's named accent colors
-/// toward the Alienware Command Center reference's cyan-blue (user-picked
-/// over a red/NitroSense-style alternative, M15's roadmap note). Applied
-/// once at startup via a CSS provider at `STYLE_PROVIDER_PRIORITY_APPLICATION`
+/// toward a cyan-blue (user-picked over a red alternative, M15's roadmap
+/// note). Applied once at startup via a CSS provider at
+/// `STYLE_PROVIDER_PRIORITY_APPLICATION`
 /// — every stock widget that already renders with `@accent_color`/
 /// `@accent_bg_color`/`@accent_fg_color` (switches, selected `ComboRow`
 /// items, the linked `ToggleButton` pill row's active state, etc.) picks

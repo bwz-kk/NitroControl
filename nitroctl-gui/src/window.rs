@@ -148,12 +148,12 @@ const GAUGE_ARC_WIDTH: f64 = 7.0;
 const GAUGE_TRACK_RGBA: (f64, f64, f64, f64) = (0.5, 0.5, 0.5, 0.25);
 const GAUGE_LABEL_RGB: (f64, f64, f64) = (0.5, 0.5, 0.5);
 /// A 270° sweep with the gap at the bottom — the common "speedometer" gauge
-/// convention (Alienware Command Center's own dashboard, one of this
-/// milestone's UI references, uses this exact shape).
+/// convention (one of this milestone's UI references uses this exact
+/// shape).
 const GAUGE_START_ANGLE: f64 = 0.75 * std::f64::consts::PI; // 135°
 const GAUGE_SWEEP: f64 = 1.5 * std::f64::consts::PI; // 270°
 
-/// A circular gauge (M13, Alienware-Command-Center-style), replacing plain
+/// A circular gauge (M13, matching a reference control-app dashboard), replacing plain
 /// text for a few headline metrics. Same "plain `DrawingArea` + Cairo, no
 /// extra dependency" approach as `Sparkline` — Cairo's toy text API is used
 /// for the centered number/unit (no shaping/i18n needs here, just ASCII
@@ -301,7 +301,7 @@ const GAUGE_THERMAL_RGB: (f64, f64, f64) = (0.902, 0.494, 0.133);
 const GAUGE_ACTIVITY_RGB: (f64, f64, f64) = (0.0, 0.831, 0.878);
 /// Laptop CPU/GPU temperatures very rarely exceed 100°C before thermal
 /// throttling/shutdown — a natural, intuitive gauge ceiling, matching the
-/// Alienware Command Center reference's own 0-100 temperature gauges.
+/// reference dashboard's own 0-100 temperature gauges.
 const GAUGE_TEMPERATURE_MAX: f64 = 100.0;
 const GAUGE_PERCENT_MAX: f64 = 100.0;
 
@@ -688,7 +688,7 @@ impl BatteryLimitRow {
 
 /// A segmented row of toggle buttons, one per profile name (M15) — the
 /// prominent "pick a profile" control shown on the Overview tab, matching
-/// the Alienware Command Center reference's tab-style profile row (as
+/// the reference dashboard's tab-style profile row (as
 /// opposed to `ProfileRow`'s `AdwComboRow`, kept for the secondary Acer
 /// Firmware Profile on its own tab). GTK4's `.linked` CSS class gives the
 /// segmented/pill look for free; `ToggleButton::set_group` makes the whole
@@ -874,7 +874,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let acer_profile_provider = build_acer_profile_provider();
     let battery_limit_provider = build_battery_limit_provider();
 
-    // M13: four headline gauges, Alienware-Command-Center-style, above
+    // M13: four headline gauges, matching a reference control-app dashboard, above
     // every other group.
     let cpu_temperature_row =
         GaugeRow::new("CPU Temp", GAUGE_TEMPERATURE_MAX, "°C", GAUGE_THERMAL_RGB);
@@ -960,7 +960,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     // tabs to fit better on horizontal", since the window is deliberately
     // narrow/vertical, M13). Overview is the default/first tab and keeps
     // the profile-pill row + the four headline gauges as the prominent
-    // main content (matching the Alienware Command Center reference), not
+    // main content (matching the reference dashboard), not
     // buried behind a click.
     let overview_group = adw::PreferencesGroup::builder()
         .title("Power Profile")
@@ -1035,8 +1035,8 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         .application(app)
         .title("NitroControl")
         // M13: narrower/taller than before (was 480x640) -- a clearly
-        // vertical/portrait proportion, matching the NitroSense/PredatorSense
-        // reference UIs' own tall-panel layout rather than a wide dashboard.
+        // vertical/portrait proportion, matching this milestone's reference
+        // UIs' own tall-panel layout rather than a wide dashboard.
         .default_width(400)
         .default_height(760)
         .content(&toolbar_view)
