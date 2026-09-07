@@ -800,10 +800,14 @@ impl MetricCard {
         text_column.append(&value_label);
         text_column.append(&meta_label);
 
+        // SPACE_6, not SPACE_4: the handoff's own spec used SPACE_4 here,
+        // but that read as too tight against the card edges once rendered
+        // in GTK (vs. the mockup's browser rendering) — more inset gives the
+        // gauge/text room to breathe and sit more centered in the card.
         let top_row = gtk4::Box::new(gtk4::Orientation::Horizontal, SPACE_4);
-        top_row.set_margin_start(SPACE_4);
-        top_row.set_margin_end(SPACE_4);
-        top_row.set_margin_top(SPACE_4);
+        top_row.set_margin_start(SPACE_6);
+        top_row.set_margin_end(SPACE_6);
+        top_row.set_margin_top(SPACE_6);
         top_row.append(&gauge.widget);
         top_row.append(&text_column);
 
@@ -942,10 +946,12 @@ impl StatCard {
         // clip to the card's rounded shape rather than spilling past its
         // border.
         container.set_overflow(gtk4::Overflow::Hidden);
-        container.set_margin_start(SPACE_4);
-        container.set_margin_end(SPACE_4);
-        container.set_margin_top(SPACE_4);
-        container.set_margin_bottom(SPACE_4);
+        // SPACE_6, not SPACE_4 — see the same note on `MetricCard::new`'s
+        // `top_row` margins.
+        container.set_margin_start(SPACE_6);
+        container.set_margin_end(SPACE_6);
+        container.set_margin_top(SPACE_6);
+        container.set_margin_bottom(SPACE_6);
         container.append(&kicker_label);
         container.append(&body);
 
@@ -989,10 +995,12 @@ impl RamCard {
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.add_css_class("card");
         container.set_overflow(gtk4::Overflow::Hidden);
-        container.set_margin_start(SPACE_4);
-        container.set_margin_end(SPACE_4);
-        container.set_margin_top(SPACE_4);
-        container.set_margin_bottom(SPACE_4);
+        // SPACE_6, not SPACE_4 — see the same note on `MetricCard::new`'s
+        // `top_row` margins.
+        container.set_margin_start(SPACE_6);
+        container.set_margin_end(SPACE_6);
+        container.set_margin_top(SPACE_6);
+        container.set_margin_bottom(SPACE_6);
         container.append(&header);
         container.append(&value_label);
         container.append(&bar);
