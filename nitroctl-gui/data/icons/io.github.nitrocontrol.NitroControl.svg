@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NitroControl app icon: a rounded-square badge in the app's own accent
+  blue (#3584e4, GNOME's default accent, same color the dashboard's
+  Sparkline/Gauge widgets already use, M11/M13), with a simplified gauge
+  glyph (270-degree arc, needle) echoing M13's real dashboard gauges
+  rather than an unrelated generic icon.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5aa1f2"/>
+      <stop offset="1" stop-color="#1c5fb4"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)"/>
+
+  <!-- Gauge track (270 degree sweep, gap at the bottom) -->
+  <path d="M 34 88 A 42 42 0 1 1 94 88"
+        fill="none" stroke="#ffffff" stroke-opacity="0.35"
+        stroke-width="9" stroke-linecap="round"/>
+
+  <!-- Gauge value arc (partial fill, matching a real dashboard reading) -->
+  <path d="M 34 88 A 42 42 0 0 1 82 41"
+        fill="none" stroke="#ffffff"
+        stroke-width="9" stroke-linecap="round"/>
+
+  <!-- Needle -->
+  <line x1="64" y1="64" x2="80" y2="46" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="64" cy="64" r="6" fill="#ffffff"/>
+</svg>

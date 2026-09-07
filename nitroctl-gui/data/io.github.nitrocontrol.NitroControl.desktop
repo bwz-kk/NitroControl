@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=NitroControl
+Comment=Monitoring and control for Acer Nitro laptops
+Exec=nitroctl-gui
+Icon=io.github.nitrocontrol.NitroControl
+Terminal=false
+Categories=System;HardwareSettings;Monitor;
+StartupNotify=true
+StartupWMClass=io.github.nitrocontrol.NitroControl
