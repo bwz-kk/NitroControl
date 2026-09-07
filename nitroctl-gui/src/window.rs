@@ -939,6 +939,21 @@ impl StatCard {
 
         let body = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
 
+        // `margin` on a widget pushes it away from its *own* parent — it
+        // doesn't pad that widget's children. So the SPACE_6 inset has to
+        // live on this inner box (a child of `container`), not on
+        // `container` itself; margining `container` would just add gap
+        // *outside* the card, between it and its Grid cell, while the
+        // kicker/value text inside would still sit flush against the
+        // card's own edges. Same fix as `MetricCard`'s `top_row`.
+        let inner = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        inner.set_margin_start(SPACE_6);
+        inner.set_margin_end(SPACE_6);
+        inner.set_margin_top(SPACE_6);
+        inner.set_margin_bottom(SPACE_6);
+        inner.append(&kicker_label);
+        inner.append(&body);
+
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.add_css_class("card");
         // Defense-in-depth, matching `MetricCard`: if a value ever renders
@@ -946,14 +961,7 @@ impl StatCard {
         // clip to the card's rounded shape rather than spilling past its
         // border.
         container.set_overflow(gtk4::Overflow::Hidden);
-        // SPACE_6, not SPACE_4 — see the same note on `MetricCard::new`'s
-        // `top_row` margins.
-        container.set_margin_start(SPACE_6);
-        container.set_margin_end(SPACE_6);
-        container.set_margin_top(SPACE_6);
-        container.set_margin_bottom(SPACE_6);
-        container.append(&kicker_label);
-        container.append(&body);
+        container.append(&inner);
 
         Self { container, body }
     }
@@ -992,18 +1000,22 @@ impl RamCard {
         let bar = gtk4::ProgressBar::new();
         bar.set_hexpand(true);
 
+        // See the same note in `StatCard::new`: the inset has to live on
+        // this inner box, not on `container`, or it just adds gap outside
+        // the card instead of padding its content.
+        let inner = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        inner.set_margin_start(SPACE_6);
+        inner.set_margin_end(SPACE_6);
+        inner.set_margin_top(SPACE_6);
+        inner.set_margin_bottom(SPACE_6);
+        inner.append(&header);
+        inner.append(&value_label);
+        inner.append(&bar);
+
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.add_css_class("card");
         container.set_overflow(gtk4::Overflow::Hidden);
-        // SPACE_6, not SPACE_4 — see the same note on `MetricCard::new`'s
-        // `top_row` margins.
-        container.set_margin_start(SPACE_6);
-        container.set_margin_end(SPACE_6);
-        container.set_margin_top(SPACE_6);
-        container.set_margin_bottom(SPACE_6);
-        container.append(&header);
-        container.append(&value_label);
-        container.append(&bar);
+        container.append(&inner);
 
         Self {
             container,
@@ -1402,16 +1414,21 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     battery_top_row.append(&battery_status_label);
     battery_top_row.set_margin_bottom(SPACE_4);
     let battery_bar = gtk4::ProgressBar::new();
+    // Inset lives on this inner box, not on `battery_hero` itself — margin
+    // on a widget pushes it away from its *own* parent, it doesn't pad that
+    // widget's children (see the same note on `StatCard`/`RamCard`).
+    let battery_hero_inner = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    battery_hero_inner.set_margin_top(SPACE_6);
+    battery_hero_inner.set_margin_bottom(SPACE_6);
+    battery_hero_inner.set_margin_start(SPACE_6);
+    battery_hero_inner.set_margin_end(SPACE_6);
+    battery_hero_inner.append(&battery_kicker);
+    battery_hero_inner.append(&battery_top_row);
+    battery_hero_inner.append(&battery_bar);
     let battery_hero = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     battery_hero.add_css_class("card");
     battery_hero.set_overflow(gtk4::Overflow::Hidden);
-    battery_hero.set_margin_top(SPACE_6);
-    battery_hero.set_margin_bottom(SPACE_6);
-    battery_hero.set_margin_start(SPACE_6);
-    battery_hero.set_margin_end(SPACE_6);
-    battery_hero.append(&battery_kicker);
-    battery_hero.append(&battery_top_row);
-    battery_hero.append(&battery_bar);
+    battery_hero.append(&battery_hero_inner);
 
     let battery_limit = BatteryLimitRow::new(
         "Battery Charge Limit",
