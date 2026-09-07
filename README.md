@@ -3,7 +3,7 @@
 Linux-native monitoring and control for Acer Nitro laptops, starting with the
 **Acer Nitro V15 (ANV15-41)**. A CLI and a GTK4/libadwaita GUI share one
 hardware abstraction; every capability it reports is backed by something
-directly verified on real hardware — not by feature parity with Acer
+directly verified on real hardware not by feature parity with Acer
 NitroSense on Windows, and never by a third-party compatibility table taken
 on faith (see [`docs/hardware.md`](docs/hardware.md) for a concrete case
 where one was wrong).
@@ -11,8 +11,8 @@ where one was wrong).
 ## Why
 
 Acer NitroSense is Windows-only. On Linux, this hardware's actual support
-surface — what's real, what needs an out-of-tree driver, and what simply
-doesn't exist — wasn't documented anywhere trustworthy. NitroControl is that
+surface what's real, what needs an out-of-tree driver, and what simply
+doesn't exist wasn't documented anywhere trustworthy. NitroControl is that
 documentation made executable: every reading and control this tool exposes
 was discovered, verified, and recorded before being wired up, and a
 capability with no evidence behind it is reported as `Unsupported`,
@@ -24,9 +24,9 @@ capability with no evidence behind it is reported as `Unsupported`,
 - CPU / iGPU / dGPU temperature, CPU frequency and utilization, RAM usage
 - Battery percentage, charge/discharge status, and power draw
 - Fan RPM (explicitly `unavailable` on hardware with no fan `hwmon`
-  interface — never silently omitted)
+  interface never silently omitted)
 - OS power profile (`power-profiles-daemon`, list/get; set needs no
-  privilege either — verified against PPD's own D-Bus policy)
+  privilege either verified against PPD's own D-Bus policy)
 - `nitroctl diagnose`: the full capability matrix plus the raw sysfs
   path/command evidence behind each reading, safe to paste into a GitHub
   issue (battery serial number and other identifying DMI fields are
@@ -93,9 +93,9 @@ Run `nitroctl-gui` for the graphical dashboard.
 Hardware-provider selection is keyed off `/sys/class/dmi/id/product_name`.
 `AcerNitroV15` is the only concrete Acer profile right now; every other
 machine falls back to `GenericLinux` (generic `hwmon`/thermal/`power_supply`/
-NVML readings only — no Acer-specific features). Support for another Acer
+NVML readings only no Acer-specific features). Support for another Acer
 model is possible but not claimed until independently verified on that
-model — see `docs/spec.md`'s `COMPAT-001`/`COMPAT-002`.
+model see `docs/spec.md`'s `COMPAT-001`/`COMPAT-002`.
 
 ## Safety stance
 
@@ -112,15 +112,15 @@ See [`docs/spec.md`](docs/spec.md)'s Safety Requirements for the full list.
 
 ## Project docs
 
-- [`docs/spec.md`](docs/spec.md) — functional/non-functional/safety
+- [`docs/spec.md`](docs/spec.md) functional/non-functional/safety
   requirements
-- [`docs/architecture.md`](docs/architecture.md) — the provider/capability
+- [`docs/architecture.md`](docs/architecture.md) the provider/capability
   abstraction and why it's shaped the way it is
-- [`docs/hardware.md`](docs/hardware.md) — the hardware discovery log:
+- [`docs/hardware.md`](docs/hardware.md) the hardware discovery log:
   what was tested, how, and what the evidence actually showed
-- [`docs/cli.md`](docs/cli.md) — CLI reference
-- [`docs/roadmap.md`](docs/roadmap.md) — milestone-by-milestone history
-- [`docs/optional-setup.md`](docs/optional-setup.md) — opt-in driver/udev
+- [`docs/cli.md`](docs/cli.md) CLI reference
+- [`docs/roadmap.md`](docs/roadmap.md) milestone-by-milestone history
+- [`docs/optional-setup.md`](docs/optional-setup.md) opt-in driver/udev
   setup for the gated features above
 
 ## License
