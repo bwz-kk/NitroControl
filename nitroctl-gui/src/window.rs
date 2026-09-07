@@ -937,6 +937,11 @@ impl StatCard {
 
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.add_css_class("card");
+        // Defense-in-depth, matching `MetricCard`: if a value ever renders
+        // wider than the card gets allocated (narrow window, long text),
+        // clip to the card's rounded shape rather than spilling past its
+        // border.
+        container.set_overflow(gtk4::Overflow::Hidden);
         container.set_margin_start(SPACE_4);
         container.set_margin_end(SPACE_4);
         container.set_margin_top(SPACE_4);
@@ -983,6 +988,7 @@ impl RamCard {
 
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.add_css_class("card");
+        container.set_overflow(gtk4::Overflow::Hidden);
         container.set_margin_start(SPACE_4);
         container.set_margin_end(SPACE_4);
         container.set_margin_top(SPACE_4);
@@ -1297,13 +1303,21 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     overview_cpu_freq_value.add_css_class("title-3");
     overview_cpu_freq.body.append(&overview_cpu_freq_value);
 
+    // Stacked, not side-by-side: at the window's default width, this card
+    // only gets a quarter of the overview strip's width (see
+    // `overview_strip` below), and two `title-3`-sized values in a row
+    // don't fit — the second one overflowed past the card's own border.
+    // One value per line always fits, matching the CPU Frequency card's
+    // single-line convention.
     let overview_fans = StatCard::new("Fan RPM");
-    let fan_values_row = gtk4::Box::new(gtk4::Orientation::Horizontal, SPACE_4);
+    let fan_values_row = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
     let overview_fan1_value = gtk4::Label::new(None);
     overview_fan1_value.set_use_markup(true);
+    overview_fan1_value.set_halign(gtk4::Align::Start);
     overview_fan1_value.add_css_class("title-3");
     let overview_fan2_value = gtk4::Label::new(None);
     overview_fan2_value.set_use_markup(true);
+    overview_fan2_value.set_halign(gtk4::Align::Start);
     overview_fan2_value.add_css_class("title-3");
     fan_values_row.append(&overview_fan1_value);
     fan_values_row.append(&overview_fan2_value);
@@ -1382,6 +1396,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let battery_bar = gtk4::ProgressBar::new();
     let battery_hero = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     battery_hero.add_css_class("card");
+    battery_hero.set_overflow(gtk4::Overflow::Hidden);
     battery_hero.set_margin_top(SPACE_6);
     battery_hero.set_margin_bottom(SPACE_6);
     battery_hero.set_margin_start(SPACE_6);
