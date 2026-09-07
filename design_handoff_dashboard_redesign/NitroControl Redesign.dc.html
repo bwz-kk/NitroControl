@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/nocturne-cfc1deb6-c5c7-4ea6-8148-d511711f1ade/styles.css">
+<script src="_ds/nocturne-cfc1deb6-c5c7-4ea6-8148-d511711f1ade/_ds_bundle.js"></script>
+<style>
+  body { margin: 0; background: #0f101a; }
+  /* Accent swapped to the app's own forced accent cyan (main.rs::apply_style, #00d4e0)
+     — same ramp roles, so every token consumer follows. */
+  body {
+    --color-accent: #00d4e0;
+    --color-accent-100: #e6fdfe;
+    --color-accent-200: #b3f3f7;
+    --color-accent-300: #7ce7ef;
+    --color-accent-400: #33dae4;
+  }
+  a { color: var(--color-accent); }
+  a:hover { color: var(--color-accent-300); }
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 12px; background: #0f101a;">
+  <div style="width: 900px; min-width: 900px; height: 640px; flex: none; display: flex; flex-direction: column; overflow: hidden; background: var(--color-bg); color: var(--color-text); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); font-family: var(--font-body); font-size: 15px;">
+
+    <div style="flex: none; display: flex; align-items: center; gap: var(--space-4); padding: 0 var(--space-6); height: 56px; background: linear-gradient(180deg, #1d2032 0%, var(--color-bg) 100%); border-bottom: 1px solid var(--color-divider);">
+      <div style="display: flex; align-items: center; gap: var(--space-3);">
+        <div style="width: 3px; height: 20px; border-radius: 2px; background: var(--color-accent); box-shadow: 0 0 12px var(--color-accent);"></div>
+        <div style="font-family: var(--font-heading); font-weight: 500; font-size: 17px; letter-spacing: -0.01em;">NitroControl</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: var(--space-2); padding: 3px 10px; border-radius: 999px; border: 1px solid var(--color-neutral-800); font-size: 12px; color: var(--color-neutral-400);">
+        <span style="width: 5px; height: 5px; border-radius: 50%; background: var(--color-accent);"></span>
+        <span style="white-space: nowrap;">Nitro ANV15-41</span>
+      </div>
+      <div style="flex: 1;"></div>
+      <div style="font-size: 12px; white-space: nowrap; color: var(--color-neutral-500);">polling 2s</div>
+      <div style="width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-neutral-400);" style-hover="background: var(--color-neutral-900); color: var(--color-text);">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5 L11.5 11.5 M11.5 4.5 L4.5 11.5"></path></svg>
+      </div>
+    </div>
+
+    <div style="flex: none; display: flex; align-items: stretch; gap: var(--space-2); padding: 0 var(--space-6); height: 42px; border-bottom: 1px solid var(--color-divider);">
+      <div onClick="{{ goOverview }}" style="{{ tabOverview }}">Overview</div>
+      <div onClick="{{ goCpuGpu }}" style="{{ tabCpuGpu }}"><span style="white-space: nowrap;">CPU / GPU</span></div>
+      <div onClick="{{ goBattery }}" style="{{ tabBattery }}">Battery</div>
+      <div onClick="{{ goPower }}" style="{{ tabPower }}">Power</div>
+      <div onClick="{{ goSystem }}" style="{{ tabSystem }}">System</div>
+    </div>
+
+    <div style="flex: 1; min-height: 0; overflow: auto; padding: var(--space-6);">
+
+      <sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; flex-direction: column; gap: var(--space-4);">
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4);">
+
+            <div style="position: relative; overflow: hidden; padding: var(--space-4) var(--space-4) 0; border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="display: flex; align-items: center; gap: var(--space-4);">
+                <svg width="60" height="60" viewBox="0 0 60 60" style="flex: none;">
+                  <circle cx="30" cy="30" r="24" fill="none" stroke="var(--color-neutral-800)" stroke-width="5" stroke-linecap="round" stroke-dasharray="113.1 150.8" transform="rotate(135 30 30)"></circle>
+                  <circle cx="30" cy="30" r="24" fill="none" stroke="var(--color-accent)" stroke-width="5" stroke-linecap="round" stroke-dasharray="70.1 150.8" transform="rotate(135 30 30)"></circle>
+                </svg>
+                <div style="min-width: 0;">
+                  <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">CPU Temperature</div>
+                  <div style="display: flex; align-items: baseline; gap: 4px; font-family: var(--font-heading);">
+                    <span style="font-size: 32px; font-weight: 500; letter-spacing: -0.02em;">60.8</span>
+                    <span style="font-size: 15px; color: var(--color-neutral-400);">°C</span>
+                  </div>
+                  <div style="font-size: 12px; white-space: nowrap; color: var(--color-neutral-500);">1 min · min 54.1 · max 71.6</div>
+                </div>
+              </div>
+              <svg viewBox="0 0 300 46" preserveAspectRatio="none" style="display: block; width: calc(100% + 22.4px); height: 46px; margin: var(--space-3) -11.2px 0;">
+                <path d="M0 34 L25 26 L50 38 L75 30 L100 18 L125 27 L150 22 L175 33 L200 14 L225 24 L250 12 L275 20 L300 16 L300 46 L0 46 Z" fill="var(--color-accent)" fill-opacity="0.14"></path>
+                <path d="M0 34 L25 26 L50 38 L75 30 L100 18 L125 27 L150 22 L175 33 L200 14 L225 24 L250 12 L275 20 L300 16" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+              </svg>
+            </div>
+
+            <div style="position: relative; overflow: hidden; padding: var(--space-4) var(--space-4) 0; border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="display: flex; align-items: center; gap: var(--space-4);">
+                <svg width="60" height="60" viewBox="0 0 60 60" style="flex: none;">
+                  <circle cx="30" cy="30" r="24" fill="none" stroke="var(--color-neutral-800)" stroke-width="5" stroke-linecap="round" stroke-dasharray="113.1 150.8" transform="rotate(135 30 30)"></circle>
+                  <circle cx="30" cy="30" r="24" fill="none" stroke="var(--color-accent)" stroke-width="5" stroke-linecap="round" stroke-dasharray="53.2 150.8" transform="rotate(135 30 30)"></circle>
+                </svg>
+                <div style="min-width: 0;">
+                  <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">dGPU Temperature</div>
+                  <div style="display: flex; align-items: baseline; gap: 4px; font-family: var(--font-heading);">
+                    <span style="font-size: 32px; font-weight: 500; letter-spacing: -0.02em;">47.0</span>
+                    <span style="font-size: 15px; color: var(--color-neutral-400);">°C</span>
+                  </div>
+                  <div style="font-size: 12px; white-space: nowrap; color: var(--color-neutral-500);">1 min · min 45.0 · max 49.0</div>
+                </div>
+              </div>
+              <svg viewBox="0 0 300 46" preserveAspectRatio="none" style="display: block; width: calc(100% + 22.4px); height: 46px; margin: var(--space-3) -11.2px 0;">
+                <path d="M0 30 L25 32 L50 28 L75 31 L100 26 L125 30 L150 33 L175 29 L200 27 L225 31 L250 28 L275 30 L300 29 L300 46 L0 46 Z" fill="var(--color-accent)" fill-opacity="0.14"></path>
+                <path d="M0 30 L25 32 L50 28 L75 31 L100 26 L125 30 L150 33 L175 29 L200 27 L225 31 L250 28 L275 30 L300 29" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+              </svg>
+            </div>
+
+            <div style="position: relative; overflow: hidden; padding: var(--space-4) var(--space-4) 0; border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="display: flex; align-items: center; gap: var(--space-4);">
+                <svg width="60" height="60" viewBox="0 0 60 60" style="flex: none;">
+                  <circle cx="30" cy="30" r="24" fill="none" stroke="var(--color-neutral-800)" stroke-width="5" stroke-linecap="round" stroke-dasharray="113.1 150.8" transform="rotate(135 30 30)"></circle>
+                  <circle cx="30" cy="30" r="24" fill="none" stroke="var(--color-accent)" stroke-width="5" stroke-linecap="round" stroke-dasharray="7.0 150.8" transform="rotate(135 30 30)"></circle>
+                </svg>
+                <div style="min-width: 0;">
+                  <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">CPU Utilization</div>
+                  <div style="display: flex; align-items: baseline; gap: 4px; font-family: var(--font-heading);">
+                    <span style="font-size: 32px; font-weight: 500; letter-spacing: -0.02em;">6.2</span>
+                    <span style="font-size: 15px; color: var(--color-neutral-400);">%</span>
+                  </div>
+                  <div style="font-size: 12px; white-space: nowrap; color: var(--color-neutral-500);">1668 MHz</div>
+                </div>
+              </div>
+              <svg viewBox="0 0 300 46" preserveAspectRatio="none" style="display: block; width: calc(100% + 22.4px); height: 46px; margin: var(--space-3) -11.2px 0;">
+                <path d="M0 42 L25 39 L50 41 L75 30 L100 40 L125 43 L150 38 L175 41 L200 22 L225 36 L250 42 L275 40 L300 43 L300 46 L0 46 Z" fill="var(--color-accent)" fill-opacity="0.14"></path>
+                <path d="M0 42 L25 39 L50 41 L75 30 L100 40 L125 43 L150 38 L175 41 L200 22 L225 36 L250 42 L275 40 L300 43" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+              </svg>
+            </div>
+
+            <div style="position: relative; overflow: hidden; padding: var(--space-4) var(--space-4) 0; border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="display: flex; align-items: center; gap: var(--space-4);">
+                <svg width="60" height="60" viewBox="0 0 60 60" style="flex: none;">
+                  <circle cx="30" cy="30" r="24" fill="none" stroke="var(--color-neutral-800)" stroke-width="5" stroke-linecap="round" stroke-dasharray="113.1 150.8" transform="rotate(135 30 30)"></circle>
+                  <circle cx="30" cy="30" r="24" fill="none" stroke="var(--color-accent)" stroke-width="5" stroke-linecap="round" stroke-dasharray="0.01 150.8" transform="rotate(135 30 30)"></circle>
+                </svg>
+                <div style="min-width: 0;">
+                  <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">dGPU Utilization</div>
+                  <div style="display: flex; align-items: baseline; gap: 4px; font-family: var(--font-heading);">
+                    <span style="font-size: 32px; font-weight: 500; letter-spacing: -0.02em;">0.0</span>
+                    <span style="font-size: 15px; color: var(--color-neutral-400);">%</span>
+                  </div>
+                  <div style="font-size: 12px; color: var(--color-neutral-500);">idle · iGPU 0.0%</div>
+                </div>
+              </div>
+              <svg viewBox="0 0 300 46" preserveAspectRatio="none" style="display: block; width: calc(100% + 22.4px); height: 46px; margin: var(--space-3) -11.2px 0;">
+                <path d="M0 45 L25 45 L50 45 L75 45 L100 45 L125 45 L150 45 L175 45 L200 45 L225 45 L250 45 L275 45 L300 45 L300 46 L0 46 Z" fill="var(--color-accent)" fill-opacity="0.14"></path>
+                <path d="M0 45 L300 45" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+              </svg>
+            </div>
+
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: var(--space-4);">
+            <div style="padding: var(--space-4); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="display: flex; align-items: baseline; justify-content: space-between;">
+                <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">RAM Usage</div>
+                <div style="font-size: 12px; color: var(--color-neutral-500);">50%</div>
+              </div>
+              <div style="font-family: var(--font-heading); font-size: 20px; margin: 2px 0 var(--space-3);">7.5 <span style="font-size: 13px; color: var(--color-neutral-400);">GiB of 14.9 GiB</span></div>
+              <div style="height: 6px; border-radius: 3px; background: var(--color-neutral-900); overflow: hidden;">
+                <div style="width: 50%; height: 100%; border-radius: 3px; background: var(--color-accent);"></div>
+              </div>
+            </div>
+            <div style="padding: var(--space-4); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">CPU Frequency</div>
+              <div style="font-family: var(--font-heading); font-size: 20px; margin-top: 2px;">1668 <span style="font-size: 13px; color: var(--color-neutral-400);">MHz</span></div>
+            </div>
+            <div style="padding: var(--space-4); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">Fan RPM</div>
+              <div style="display: flex; gap: var(--space-4); margin-top: 2px; font-family: var(--font-heading); font-size: 20px;">
+                <div style="white-space: nowrap;">3032<span style="font-size: 12px; color: var(--color-neutral-500);"> fan 1</span></div>
+                <div style="white-space: nowrap;">2675<span style="font-size: 12px; color: var(--color-neutral-500);"> fan 2</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isCpuGpu }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; gap: var(--space-6);">
+          <div>
+            <div style="font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500); margin-bottom: var(--space-3);">CPU</div>
+            <div style="border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: var(--space-6); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-neutral-900);">
+                <div style="flex: 1;">CPU Temperature</div>
+                <svg viewBox="0 0 200 28" preserveAspectRatio="none" style="width: 200px; height: 28px;">
+                  <path d="M0 20 L16 15 L33 23 L50 18 L66 10 L83 16 L100 13 L116 20 L133 8 L150 14 L166 6 L183 12 L200 9" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+                </svg>
+                <div style="width: 84px; text-align: right; font-family: var(--font-heading); font-size: 16px;">60.8 °C</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: var(--space-6); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-neutral-900);">
+                <div style="flex: 1;">CPU Utilization</div>
+                <svg viewBox="0 0 200 28" preserveAspectRatio="none" style="width: 200px; height: 28px;">
+                  <path d="M0 25 L16 23 L33 25 L50 17 L66 24 L83 26 L100 22 L116 25 L133 12 L150 21 L166 25 L183 24 L200 26" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+                </svg>
+                <div style="width: 84px; text-align: right; font-family: var(--font-heading); font-size: 16px;">6.2 %</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: var(--space-6); padding: var(--space-3) var(--space-4);">
+                <div style="flex: 1;">CPU Frequency</div>
+                <svg viewBox="0 0 200 28" preserveAspectRatio="none" style="width: 200px; height: 28px;">
+                  <path d="M0 18 L16 14 L33 20 L50 12 L66 19 L83 15 L100 17 L116 11 L133 16 L150 19 L166 13 L183 17 L200 15" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+                </svg>
+                <div style="width: 84px; text-align: right; font-family: var(--font-heading); font-size: 16px;">1668 MHz</div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div style="font-size: 13px; letterspacing: 0.08em; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500); margin-bottom: var(--space-3);">GPU</div>
+            <div style="border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: var(--space-6); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-neutral-900);">
+                <div style="flex: 1;">iGPU Temperature</div>
+                <svg viewBox="0 0 200 28" preserveAspectRatio="none" style="width: 200px; height: 28px;">
+                  <path d="M0 16 L16 18 L33 15 L50 17 L66 14 L83 16 L100 19 L116 15 L133 14 L150 17 L166 15 L183 16 L200 15" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+                </svg>
+                <div style="width: 84px; text-align: right; font-family: var(--font-heading); font-size: 16px;">53.0 °C</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: var(--space-6); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-neutral-900);">
+                <div style="flex: 1;">dGPU Temperature</div>
+                <svg viewBox="0 0 200 28" preserveAspectRatio="none" style="width: 200px; height: 28px;">
+                  <path d="M0 18 L16 19 L33 17 L50 18 L66 16 L83 18 L100 20 L116 17 L133 16 L150 19 L166 17 L183 18 L200 17" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+                </svg>
+                <div style="width: 84px; text-align: right; font-family: var(--font-heading); font-size: 16px;">47.0 °C</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: var(--space-6); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-neutral-900);">
+                <div style="flex: 1;">iGPU Utilization</div>
+                <svg viewBox="0 0 200 28" preserveAspectRatio="none" style="width: 200px; height: 28px;">
+                  <path d="M0 26 L200 26" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+                </svg>
+                <div style="width: 84px; text-align: right; font-family: var(--font-heading); font-size: 16px;">0.0 %</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: var(--space-6); padding: var(--space-3) var(--space-4);">
+                <div style="flex: 1;">dGPU Utilization</div>
+                <svg viewBox="0 0 200 28" preserveAspectRatio="none" style="width: 200px; height: 28px;">
+                  <path d="M0 26 L200 26" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+                </svg>
+                <div style="width: 84px; text-align: right; font-family: var(--font-heading); font-size: 16px;">0.0 %</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isBattery }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; gap: var(--space-4); max-width: 560px;">
+          <div style="padding: var(--space-6); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+            <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">Battery</div>
+            <div style="display: flex; align-items: baseline; gap: var(--space-3); margin: 2px 0 var(--space-4);">
+              <span style="font-family: var(--font-heading); font-size: 42px; letter-spacing: -0.02em;">80<span style="font-size: 20px; color: var(--color-neutral-400);">%</span></span>
+              <span style="font-size: 13px; color: var(--color-neutral-400);">Not charging · drawing 0.0 W</span>
+            </div>
+            <div style="height: 6px; border-radius: 3px; background: var(--color-neutral-900); overflow: hidden;">
+              <div style="width: 80%; height: 100%; border-radius: 3px; background: var(--color-accent);"></div>
+            </div>
+          </div>
+          <div style="border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm); overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4); border-bottom: 1px solid var(--color-neutral-900);">
+              <div style="flex: 1;">
+                <div>Battery Charge Limit</div>
+                <div style="font-size: 13px; color: var(--color-neutral-500);">Caps charging in firmware to slow battery wear</div>
+              </div>
+              <div onClick="{{ toggleLimit }}" style="{{ limitTrack }}">
+                <div style="{{ limitKnob }}"></div>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4);">
+              <div style="flex: 1;">
+                <div>Battery Calibration Mode</div>
+                <div style="font-size: 13px; color: var(--color-neutral-500);">Read-only here · set with <code style="font-size: 12px; color: var(--color-accent-300);">nitroctl battery-calibrate</code></div>
+              </div>
+              <div style="padding: 3px 10px; border-radius: 999px; border: 1px solid var(--color-neutral-800); font-size: 12px; color: var(--color-neutral-400);">off</div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isPower }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; gap: var(--space-6); max-width: 620px;">
+          <div>
+            <div style="font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500); margin-bottom: var(--space-3);">Power Profile</div>
+            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3);">
+              <div onClick="{{ pickSaver }}" style="{{ profileSaver }}">
+                <div style="font-family: var(--font-heading); font-size: 15px;">Power saver</div>
+                <div style="font-size: 12px; color: var(--color-neutral-500);">Quiet, longest runtime</div>
+              </div>
+              <div onClick="{{ pickBalanced }}" style="{{ profileBalanced }}">
+                <div style="font-family: var(--font-heading); font-size: 15px;">Balanced</div>
+                <div style="font-size: 12px; color: var(--color-neutral-500);">Default for daily use</div>
+              </div>
+              <div onClick="{{ pickPerf }}" style="{{ profilePerf }}">
+                <div style="font-family: var(--font-heading); font-size: 15px;">Performance</div>
+                <div style="font-size: 12px; color: var(--color-neutral-500);">Full clocks, loud fans</div>
+              </div>
+            </div>
+            <div style="font-size: 12px; color: var(--color-neutral-500); margin-top: var(--space-3);">via power-profiles-daemon</div>
+          </div>
+          <div>
+            <div style="font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500); margin-bottom: var(--space-3);">Acer Firmware Profile</div>
+            <div style="display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="flex: 1;">
+                <div>Acer Firmware Profile</div>
+                <div style="font-size: 13px; color: var(--color-neutral-500);">Platform profile exposed by the Acer WMI driver</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: var(--space-2); padding: 6px 10px 6px 12px; border-radius: var(--radius-md); border: 1px solid var(--color-accent); color: var(--color-accent-200); cursor: pointer; font-size: 14px;" style-hover="background: color-mix(in srgb, var(--color-accent) 14%, transparent);">
+                <span>balanced</span>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5 L8 10.5 L12 6.5"></path></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isSystem }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; gap: var(--space-4); max-width: 620px;">
+          <div style="padding: var(--space-6); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+            <div style="display: flex; align-items: baseline; justify-content: space-between;">
+              <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">RAM Usage</div>
+              <div style="font-size: 12px; color: var(--color-neutral-500);">50%</div>
+            </div>
+            <div style="font-family: var(--font-heading); font-size: 25px; margin: 2px 0 var(--space-4);">7.5 <span style="font-size: 15px; color: var(--color-neutral-400);">GiB of 14.9 GiB</span></div>
+            <div style="height: 6px; border-radius: 3px; background: var(--color-neutral-900); overflow: hidden;">
+              <div style="width: 50%; height: 100%; border-radius: 3px; background: var(--color-accent);"></div>
+            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4);">
+            <div style="padding: var(--space-4); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">Fan 1</div>
+              <div style="font-family: var(--font-heading); font-size: 25px; margin-top: 2px;">3032 <span style="font-size: 14px; color: var(--color-neutral-400);">RPM</span></div>
+            </div>
+            <div style="padding: var(--space-4); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-sm);">
+              <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--color-neutral-500);">Fan 2</div>
+              <div style="font-family: var(--font-heading); font-size: 25px; margin-top: 2px;">2675 <span style="font-size: 14px; color: var(--color-neutral-400);">RPM</span></div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg); border: 1px solid var(--color-neutral-800); font-size: 13px; color: var(--color-neutral-500);">
+            <span>Machine</span>
+            <span style="color: var(--color-neutral-300);">Nitro ANV15-41 · AcerNitroV15 provider</span>
+          </div>
+        </div>
+      </sc-if>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 948, &quot;height&quot;: 688}}">
+class Component extends DCLogic {
+  state = { tab: "overview", profile: "balanced", limit: true };
+
+  tabStyle(name) {
+    const active = this.state.tab === name;
+    return "display:flex;align-items:center;padding:0 12px;cursor:pointer;font-family:var(--font-heading);font-size:14px;"
+      + "border-bottom:2px solid " + (active ? "var(--color-accent)" : "transparent") + ";"
+      + "color:" + (active ? "var(--color-text)" : "var(--color-neutral-500)") + ";";
+  }
+
+  profileStyle(name) {
+    const active = this.state.profile === name;
+    return "padding:11.2px;border-radius:var(--radius-md);cursor:pointer;"
+      + (active
+        ? "border:1px solid var(--color-accent);background:color-mix(in srgb, var(--color-accent) 12%, transparent);box-shadow:0 0 0 1px var(--color-accent);"
+        : "border:1px solid var(--color-neutral-800);background:var(--color-surface);");
+  }
+
+  renderVals() {
+    const t = this.state.tab;
+    const go = (tab) => () => this.setState({ tab });
+    const pick = (profile) => () => this.setState({ profile });
+    const on = this.state.limit;
+    return {
+      isOverview: t === "overview", isCpuGpu: t === "cpu-gpu", isBattery: t === "battery",
+      isPower: t === "power", isSystem: t === "system",
+      goOverview: go("overview"), goCpuGpu: go("cpu-gpu"), goBattery: go("battery"),
+      goPower: go("power"), goSystem: go("system"),
+      tabOverview: this.tabStyle("overview"), tabCpuGpu: this.tabStyle("cpu-gpu"),
+      tabBattery: this.tabStyle("battery"), tabPower: this.tabStyle("power"),
+      tabSystem: this.tabStyle("system"),
+      pickSaver: pick("power-saver"), pickBalanced: pick("balanced"), pickPerf: pick("performance"),
+      profileSaver: this.profileStyle("power-saver"),
+      profileBalanced: this.profileStyle("balanced"),
+      profilePerf: this.profileStyle("performance"),
+      toggleLimit: () => this.setState({ limit: !this.state.limit }),
+      limitTrack: "width:44px;height:24px;border-radius:12px;padding:3px;cursor:pointer;display:flex;align-items:center;transition:background .15s;"
+        + (on ? "background:var(--color-accent);justify-content:flex-end;" : "background:var(--color-neutral-800);justify-content:flex-start;"),
+      limitKnob: "width:18px;height:18px;border-radius:50%;background:" + (on ? "var(--color-accent-100)" : "var(--color-neutral-500)") + ";",
+    };
+  }
+}
+</script>
+</body>
+</html>
