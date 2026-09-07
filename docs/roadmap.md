@@ -204,6 +204,19 @@ Continuing the UI-research pass (M11), the user pointed at two more concrete ref
 - No `nitroctl-core`/`nitroctl-cli` changes. 209/209 tests unaffected, clippy/fmt clean.
 - Runtime-verified: launched the real binary, 4+ poll ticks with the gauge-drawing code exercising real live data — no panics, no GTK-critical warnings, clean shutdown. A full visual/click-through check was again left to the user, for the same WM-automation reason noted in M11/M12.
 
+## M14 — GUI desktop integration (`.desktop` entry + icon) — done 2026-09-06
+
+`nitroctl-gui` had a real `GApplication` id (`io.github.nitrocontrol.NitroControl`) since M4 but no way to launch it except by running the built binary directly — no app-launcher entry, no icon, invisible to GNOME Shell/any desktop's overview or menu.
+
+- New `nitroctl-gui/data/` directory (matching common GNOME-app convention): `io.github.nitrocontrol.NitroControl.desktop` and `icons/io.github.nitrocontrol.NitroControl.svg`.
+- Icon: hand-authored SVG, a rounded-square badge in the app's own accent blue (`#3584e4`, the same color M11's `Sparkline` and M13's `Gauge` already use) with a simplified gauge glyph (270° arc + needle) — echoing M13's real dashboard gauges rather than an unrelated generic icon.
+- Desktop entry: `Exec=nitroctl-gui` (relies on `PATH`, not a hardcoded absolute path — portable to wherever the binary ends up installed), `Categories=System;HardwareSettings;Monitor;` (picked one main category per `desktop-file-validate`'s own hint, since having two main categories risks the app appearing twice in a menu), `StartupWMClass` matching the real `GApplication` id.
+- `desktop-file-validate`: clean (one cosmetic hint only — `HardwareSettings` could additionally pair with `Settings`, not acted on, not an error).
+- **Installed locally, for real, on this machine**: binary copied to `~/.local/bin/nitroctl-gui` (already on `PATH`), icon to `~/.local/share/icons/hicolor/scalable/apps/`, desktop entry to `~/.local/share/applications/` — all user-scoped, no root, no system-wide change (consistent with SAFE-001/002's stance of never touching system config without the user's own explicit action, though this one is fully reversible and non-privileged by nature, unlike the udev-rule setups in `optional-setup.md`).
+- **Live-verified end-to-end**: `gio launch ~/.local/share/applications/io.github.nitrocontrol.NitroControl.desktop` — the exact mechanism a real app launcher/menu uses — successfully started the app (confirmed via `hyprctl clients`, real window, real GApplication id). Left running afterward as a genuinely usable app, not a throwaway test process.
+- No `nitroctl-core`/`nitroctl-cli`/Rust source changes — this is packaging/desktop-integration metadata only, no new tests to add.
+- **Reinstall note**: the locally installed binary is a snapshot built from this branch (M11-M14's combined GUI work) — once the M11-M14 PR stack merges to `main`, rebuild (`cargo build --release`) and re-copy to `~/.local/bin/nitroctl-gui` to pick up the merged `main`'s exact commit rather than this branch snapshot.
+
 ## M5+ — remaining re-evaluation items
 
 - **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.
