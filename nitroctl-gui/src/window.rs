@@ -387,11 +387,12 @@ struct Snapshot {
     ram_usage: RowContent,
     battery: RowContent,
     fan_rpm: RowContent,
-    power_profile: RowContent,
-    /// M12: `(all profile names, currently active name)` when both the
+    /// M12/M15: `(all profile names, currently active name)` when both the
     /// profile list and the current profile are available — `None` means
-    /// there's nothing to populate the interactive selector with (the
-    /// `RowContent` text alone covers what to show instead).
+    /// there's nothing to populate the interactive selector with. Feeds
+    /// `ProfilePills` (Overview tab) directly; no separate `RowContent`
+    /// needed since the pill row's own button labels/active-state already
+    /// carry that information.
     power_profile_options: Option<(Vec<String>, String)>,
     acer_profile: RowContent,
     acer_profile_options: Option<(Vec<String>, String)>,
@@ -462,7 +463,6 @@ fn take_snapshot(
         ram_usage: format::ram_usage_row(&sensors.ram_usage()),
         battery: format::battery_row(&sensors.battery()),
         fan_rpm: format::fan_rpm_row(&sensors.fan_rpm()),
-        power_profile: format::profile_status_row(&profile.current_profile()),
         power_profile_options: profile_options(profile),
         acer_profile: format::profile_status_row(&acer_profile.current_profile()),
         acer_profile_options: profile_options(acer_profile),
@@ -685,7 +685,119 @@ impl BatteryLimitRow {
     }
 }
 
+/// A segmented row of toggle buttons, one per profile name (M15) — the
+/// prominent "pick a profile" control shown on the Overview tab, matching
+/// the Alienware Command Center reference's tab-style profile row (as
+/// opposed to `ProfileRow`'s `AdwComboRow`, kept for the secondary Acer
+/// Firmware Profile on its own tab). GTK4's `.linked` CSS class gives the
+/// segmented/pill look for free; `ToggleButton::set_group` makes the whole
+/// row behave as one radio choice.
+struct ProfilePills {
+    container: gtk4::Box,
+    buttons: Rc<RefCell<Vec<(String, gtk4::ToggleButton)>>>,
+    applying_from_poll: Rc<Cell<bool>>,
+    provider: Arc<dyn PowerProfileProvider>,
+    toasts: adw::ToastOverlay,
+}
+
+impl ProfilePills {
+    fn new(provider: Arc<dyn PowerProfileProvider>, toasts: adw::ToastOverlay) -> Self {
+        let container = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        container.add_css_class("linked");
+        container.set_halign(gtk4::Align::Center);
+
+        Self {
+            container,
+            buttons: Rc::new(RefCell::new(Vec::new())),
+            applying_from_poll: Rc::new(Cell::new(false)),
+            provider,
+            toasts,
+        }
+    }
+
+    fn connect_click(&self, name: String, button: &gtk4::ToggleButton) {
+        let guard = self.applying_from_poll.clone();
+        let provider = self.provider.clone();
+        let toasts = self.toasts.clone();
+        button.connect_toggled(move |button| {
+            if guard.get() || !button.is_active() {
+                return; // poll-driven update, or the button being un-toggled
+            }
+            let provider = provider.clone();
+            let toasts = toasts.clone();
+            let write_name = name.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let for_write = write_name.clone();
+                let result = gio::spawn_blocking(move || provider.set_profile(&for_write)).await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => toasts.add_toast(adw::Toast::new(&profile_error_message(&e))),
+                    Err(_) => {
+                        toasts.add_toast(adw::Toast::new("Couldn't set profile: internal error"))
+                    }
+                }
+            });
+        });
+    }
+
+    fn apply(&self, options: &Option<(Vec<String>, String)>) {
+        self.applying_from_poll.set(true);
+
+        let Some((names, current)) = options else {
+            // Nothing real to pick from -- an insensitive single button
+            // naming the state, same convention as ProfileRow's None arm.
+            let mut buttons = self.buttons.borrow_mut();
+            if buttons.len() != 1 || buttons[0].0 != "unavailable" {
+                while let Some(child) = self.container.first_child() {
+                    self.container.remove(&child);
+                }
+                let placeholder = gtk4::ToggleButton::builder().label("Unavailable").build();
+                placeholder.set_sensitive(false);
+                self.container.append(&placeholder);
+                *buttons = vec![("unavailable".to_string(), placeholder)];
+            }
+            self.applying_from_poll.set(false);
+            return;
+        };
+
+        let mut buttons = self.buttons.borrow_mut();
+        let current_names: Vec<String> = buttons.iter().map(|(n, _)| n.clone()).collect();
+        if current_names != *names {
+            while let Some(child) = self.container.first_child() {
+                self.container.remove(&child);
+            }
+            let mut new_buttons = Vec::new();
+            let mut first_button: Option<gtk4::ToggleButton> = None;
+            for name in names {
+                let button = gtk4::ToggleButton::builder()
+                    .label(name.to_uppercase())
+                    .build();
+                if let Some(first) = &first_button {
+                    button.set_group(Some(first));
+                } else {
+                    first_button = Some(button.clone());
+                }
+                self.connect_click(name.clone(), &button);
+                self.container.append(&button);
+                new_buttons.push((name.clone(), button));
+            }
+            *buttons = new_buttons;
+        }
+        for (name, button) in buttons.iter() {
+            button.set_sensitive(true);
+            if name == current {
+                button.set_active(true);
+            }
+        }
+        drop(buttons);
+
+        self.applying_from_poll.set(false);
+    }
+}
+
 struct Dashboard {
+    /// M15: the prominent profile-pill row on the Overview tab.
+    power_profile_pills: ProfilePills,
     /// M13: the four headline-metric gauges shown above every other group.
     cpu_temperature_gauge: Gauge,
     dgpu_temperature_gauge: Gauge,
@@ -702,7 +814,6 @@ struct Dashboard {
     ram_usage: DashboardRow,
     battery: DashboardRow,
     fan_rpm: DashboardRow,
-    power_profile: ProfileRow,
     acer_profile: ProfileRow,
     battery_limit: BatteryLimitRow,
     battery_calibration: DashboardRow,
@@ -711,6 +822,9 @@ struct Dashboard {
 
 impl Dashboard {
     fn apply(&self, snapshot: &Snapshot) {
+        self.power_profile_pills
+            .apply(&snapshot.power_profile_options);
+
         self.cpu_temperature_gauge
             .set_value(snapshot.cpu_temperature_value);
         self.dgpu_temperature_gauge
@@ -733,8 +847,6 @@ impl Dashboard {
         self.ram_usage.update(&snapshot.ram_usage);
         self.battery.update(&snapshot.battery);
         self.fan_rpm.update(&snapshot.fan_rpm);
-        self.power_profile
-            .apply(&snapshot.power_profile, &snapshot.power_profile_options);
         self.acer_profile
             .apply(&snapshot.acer_profile, &snapshot.acer_profile_options);
         self.battery_limit
@@ -796,11 +908,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let ram_usage = DashboardRow::new("RAM Usage");
     let battery = DashboardRow::new("Battery");
     let fan_rpm = DashboardRow::new("Fan RPM");
-    let power_profile = ProfileRow::new(
-        "Power Profile",
-        profile_provider.clone(),
-        toast_overlay.clone(),
-    );
+    let power_profile_pills = ProfilePills::new(profile_provider.clone(), toast_overlay.clone());
     let acer_profile = ProfileRow::new(
         "Acer Firmware Profile",
         acer_profile_provider.clone(),
@@ -842,32 +950,85 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         ],
     );
     let fans_group = group("Fans", &[&fan_rpm.widget]);
-    let power_group = group(
-        "Power Profile",
-        &[
-            power_profile.widget.upcast_ref::<adw::ActionRow>(),
-            acer_profile.widget.upcast_ref::<adw::ActionRow>(),
-        ],
+    let acer_power_group = group(
+        "Acer Firmware Profile",
+        &[acer_profile.widget.upcast_ref::<adw::ActionRow>()],
     );
 
-    let overview_group = adw::PreferencesGroup::builder().title("Overview").build();
-    overview_group.add(&gauge_grid);
+    // M15: category tabs (per-request -- "separate each category for the
+    // tabs to fit better on horizontal", since the window is deliberately
+    // narrow/vertical, M13). Overview is the default/first tab and keeps
+    // the profile-pill row + the four headline gauges as the prominent
+    // main content (matching the Alienware Command Center reference), not
+    // buried behind a click.
+    let overview_group = adw::PreferencesGroup::builder()
+        .title("Power Profile")
+        .build();
+    overview_group.add(&power_profile_pills.container);
+    let gauges_group = adw::PreferencesGroup::builder().title("Overview").build();
+    gauges_group.add(&gauge_grid);
 
-    let page = adw::PreferencesPage::new();
-    page.add(&overview_group);
-    page.add(&cpu_group);
-    page.add(&gpu_group);
-    page.add(&memory_group);
-    page.add(&battery_group);
-    page.add(&fans_group);
-    page.add(&power_group);
+    let overview_page = adw::PreferencesPage::new();
+    overview_page.add(&overview_group);
+    overview_page.add(&gauges_group);
 
-    toast_overlay.set_child(Some(&page));
+    let cpu_gpu_page = adw::PreferencesPage::new();
+    cpu_gpu_page.add(&cpu_group);
+    cpu_gpu_page.add(&gpu_group);
+
+    let battery_page = adw::PreferencesPage::new();
+    battery_page.add(&battery_group);
+
+    let power_page = adw::PreferencesPage::new();
+    power_page.add(&acer_power_group);
+
+    let system_page = adw::PreferencesPage::new();
+    system_page.add(&memory_group);
+    system_page.add(&fans_group);
+
+    let view_stack = adw::ViewStack::new();
+    view_stack.add_titled_with_icon(
+        &overview_page,
+        Some("overview"),
+        "Overview",
+        "view-grid-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &cpu_gpu_page,
+        Some("cpu-gpu"),
+        "CPU / GPU",
+        "utilities-system-monitor-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &battery_page,
+        Some("battery"),
+        "Battery",
+        "battery-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &power_page,
+        Some("power"),
+        "Power",
+        "power-profile-balanced-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &system_page,
+        Some("system"),
+        "System",
+        "preferences-system-symbolic",
+    );
+
+    let view_switcher = adw::ViewSwitcherBar::new();
+    view_switcher.set_stack(Some(&view_stack));
+    view_switcher.set_reveal(true);
+
+    toast_overlay.set_child(Some(&view_stack));
 
     let header_bar = adw::HeaderBar::new();
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&header_bar);
     toolbar_view.set_content(Some(&toast_overlay));
+    toolbar_view.add_bottom_bar(&view_switcher);
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -881,6 +1042,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         .build();
 
     let dashboard = Rc::new(Dashboard {
+        power_profile_pills,
         cpu_temperature_gauge: cpu_temperature_row.gauge,
         dgpu_temperature_gauge: dgpu_temperature_row.gauge,
         cpu_utilization_gauge: cpu_utilization_row.gauge,
@@ -896,7 +1058,6 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         ram_usage,
         battery,
         fan_rpm,
-        power_profile,
         acer_profile,
         battery_limit,
         battery_calibration,

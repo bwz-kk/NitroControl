@@ -217,6 +217,17 @@ Continuing the UI-research pass (M11), the user pointed at two more concrete ref
 - No `nitroctl-core`/`nitroctl-cli`/Rust source changes — this is packaging/desktop-integration metadata only, no new tests to add.
 - **Reinstall note**: the locally installed binary is a snapshot built from this branch (M11-M14's combined GUI work) — once the M11-M14 PR stack merges to `main`, rebuild (`cargo build --release`) and re-copy to `~/.local/bin/nitroctl-gui` to pick up the merged `main`'s exact commit rather than this branch snapshot.
 
+## M15 — GUI: category tabs + profile pill selector — done 2026-09-06
+
+Continuing the UI-research pass: the user supplied two more references — a real Acer NitroSense screenshot (dark theme, red accent, slanted panel headers, radio-list controls) and an Alienware Command Center "Performance" page (profile picked via a row of pill/tab buttons above four big gauges, gauges+detail stayed the prominent main content). Explicit ask: split categories into tabs (window is deliberately narrow/vertical, M13, so a long single scrolling page doesn't fit well), profile switching should look like the pill-button row, and the gauges/info must stay the main visible content rather than get buried by the new navigation.
+
+- **`AdwViewStack` + bottom `AdwViewSwitcherBar`** replace the single long `PreferencesPage`. Bottom placement (not a top switcher) is the standard GNOME convention for narrow/mobile-shaped windows — more horizontal room for tab labels than squeezed into a header bar, matching the "fit better on horizontal" ask directly.
+- **Five tabs**: Overview (profile pills + the four M13 gauges — the default/first tab, kept as the prominent main content per the Alienware reference), CPU / GPU (existing per-metric rows, including M11's sparkline), Battery, Power (the secondary Acer Firmware Profile combo row), System (RAM + Fans).
+- **New `ProfilePills` type**: a segmented row of `gtk4::ToggleButton`s (`.linked` CSS class for the pill look, `ToggleButton::set_group` for radio-choice behavior) replacing `ProfileRow`'s `AdwComboRow` for the primary OS-level Power Profile — directly mirrors the Alienware reference's tab-style profile row. Same poll-guard (`Cell<bool>`), `spawn_blocking` write, and `AdwToast`-on-failure pattern as `ProfileRow`/`BatteryLimitRow`, adapted to a button-group instead of a combo model. The secondary Acer Firmware Profile keeps `ProfileRow`'s `AdwComboRow` on its own Power tab — less central, no need to duplicate the pill treatment there.
+- Color/texture reskinning (NitroSense's red accent, carbon-fiber background) was **not** done this pass — the two references gave conflicting accent colors (red vs. cyan) with no clear signal which one the user actually wants, and the explicit, unambiguous asks (tabs, pill-style profile picker, gauges staying prominent) were structural, not color. Flagged to the user as a separate follow-up decision rather than guessed at.
+- No `nitroctl-core`/`nitroctl-cli` changes. 209/209 tests unaffected, clippy/fmt clean.
+- Runtime-verified: launched the real binary, 4+ poll ticks exercising the new tab stack and profile pills against real `power-profiles-daemon` data — no panics, no GTK-critical warnings, clean shutdown.
+
 ## M5+ — remaining re-evaluation items
 
 - **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.
