@@ -166,6 +166,17 @@ Implementation (TDD throughout):
 
 **Live verification: done 2026-09-06.** Unprivileged `nitroctl power-draw` → `requires elevated privilege`, exit 1 (default state). `sudo nitroctl power-draw` → real reading (`6.4 W`), order-of-magnitude cross-checked against a raw two-sample `cat energy_uj` delta over the same window. The optional udev rule in `optional-setup.md` was also live-tested (not just documented-and-reasoned): applied, confirmed `nitroctl power-draw` works with no `sudo` after (`6.4 W`, exit 0), then reverted — this machine stays at its default root-only state, per SAFE-001/002 (NitroControl doesn't install the relax itself; the user can opt in later by following the doc if they want this as a daily-driver capability, the way `acer-profile`/`battery-limit` were opted into in M5/M6).
 
+## M11 — GUI polish: CPU temperature sparkline — done 2026-09-06
+
+Following a UI-research pass (web search for well-designed GTK4/libadwaita and laptop-control-app UIs — Mission Center, GNOME Resources, asusctl's ROG Control Center, Corsair iCUE/NZXT CAM as references), mocked up one concrete visual upgrade: a live inline history graph on the CPU Temperature row, matching Mission Center/Resources' sparkline convention.
+
+- New `Sparkline` type in `nitroctl-gui::window`: a plain `gtk4::DrawingArea` + Cairo, no charting dependency. Holds a 30-sample ring buffer (1 minute at the existing 2s poll interval), right-aligned so the most recent reading sits at the row's right edge, dynamically scaled to the buffer's own min/max (a fixed-degree fixed range would look flat given how narrow this hardware's real CPU-temp band is), drawn as a filled line in GNOME's default accent blue (`#3584e4`) — legible in both light and dark themes without querying theme state.
+- Wired as a suffix widget on the existing "CPU Temperature" `adw::ActionRow` (no new row/group, no layout change) — the row keeps its existing subtitle text, the sparkline sits alongside it.
+- `Snapshot` gained a `cpu_temperature_value: Option<f64>` field (only pushed to the sparkline when there's a real value to plot — `Unsupported`/`Unknown`/`RequiresPrivilege` ticks are skipped, not plotted as fabricated points).
+- No test regressions (209/209 unaffected — pure UI addition, no `nitroctl-core` change); clippy/fmt clean. Verified via `cargo build`/`cargo test`/`cargo clippy`; a live on-screen check was left to the user (this session's Wayland compositor uses a non-standard Lua-based `hyprctl dispatch` layer that blocked scripted window-focus/screenshot automation — noted as a real friction point, not investigated further this pass).
+
+Only this one row was mocked up, per explicit scope — a template for extending the same `Sparkline` type to other numeric rows (iGPU/dGPU temp, CPU utilization, power draw) later if desired.
+
 ## M5+ — remaining re-evaluation items
 
 - **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.
