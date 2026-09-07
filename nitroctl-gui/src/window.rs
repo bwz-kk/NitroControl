@@ -28,14 +28,16 @@ use gtk4::{gio, glib, DrawingArea};
 use libadwaita as adw;
 
 use nitroctl_core::battery_calibration::BatteryCalibrationProvider;
-use nitroctl_core::battery_limit::{AcerWmiBatteryBackend, BatteryLimitProvider};
+use nitroctl_core::battery_limit::{
+    AcerWmiBatteryBackend, BatteryLimitError, BatteryLimitProvider,
+};
 use nitroctl_core::capability::CapabilityState;
 use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
 use nitroctl_core::power_draw::{PowerDrawProvider, RaplPowerBackend};
 use nitroctl_core::power_profile::{
     AcerPlatformProfileBackend, FailedBackend, PowerProfileProvider, PowerProfilesDaemon,
-    ZbusPowerProfilesBackend,
+    ProfileError, ZbusPowerProfilesBackend,
 };
 use nitroctl_core::sensor::{Celsius, GpuKind, SensorProvider};
 use nitroctl_core::sysfs::RealSysfsReader;
@@ -221,10 +223,44 @@ struct Snapshot {
     battery: RowContent,
     fan_rpm: RowContent,
     power_profile: RowContent,
+    /// M12: `(all profile names, currently active name)` when both the
+    /// profile list and the current profile are available — `None` means
+    /// there's nothing to populate the interactive selector with (the
+    /// `RowContent` text alone covers what to show instead).
+    power_profile_options: Option<(Vec<String>, String)>,
     acer_profile: RowContent,
+    acer_profile_options: Option<(Vec<String>, String)>,
     battery_limit: RowContent,
+    /// M12: `Some(enabled)` when the switch has a real value to show/edit.
+    battery_limit_value: Option<bool>,
     battery_calibration: RowContent,
     power_draw: RowContent,
+}
+
+/// M12: `(names, current_name)` when a `PowerProfileProvider`'s list and
+/// current-profile reads both succeeded — the shape `ProfileRow::apply`
+/// needs to populate and select the right entry in its `AdwComboRow`.
+fn profile_options(provider: &dyn PowerProfileProvider) -> Option<(Vec<String>, String)> {
+    let names = match provider.list_profiles() {
+        CapabilityState::Supported(names) => names,
+        _ => return None,
+    };
+    let current = match provider.current_profile() {
+        CapabilityState::Supported(status) | CapabilityState::HardwareDependent(status) => {
+            status.name
+        }
+        _ => return None,
+    };
+    Some((names, current))
+}
+
+/// M12: the raw bool a `BatteryLimitProvider`'s `AdwSwitchRow` needs, when
+/// there's a real value to show/edit.
+fn battery_limit_value(state: &CapabilityState<bool>) -> Option<bool> {
+    match state {
+        CapabilityState::Supported(v) | CapabilityState::HardwareDependent(v) => Some(*v),
+        _ => None,
+    }
 }
 
 /// Blocking: reads every sensor + both power-profile sources + the battery
@@ -256,8 +292,11 @@ fn take_snapshot(
         battery: format::battery_row(&sensors.battery()),
         fan_rpm: format::fan_rpm_row(&sensors.fan_rpm()),
         power_profile: format::profile_status_row(&profile.current_profile()),
+        power_profile_options: profile_options(profile),
         acer_profile: format::profile_status_row(&acer_profile.current_profile()),
+        acer_profile_options: profile_options(acer_profile),
         battery_limit: format::battery_limit_row(&battery_limit.health_mode()),
+        battery_limit_value: battery_limit_value(&battery_limit.health_mode()),
         battery_calibration: format::battery_calibration_row(
             &battery_calibration.calibration_mode(),
         ),
@@ -286,6 +325,195 @@ impl DashboardRow {
     }
 }
 
+fn profile_error_message(e: &ProfileError) -> String {
+    match e {
+        ProfileError::InvalidProfile { requested, valid } => format!(
+            "Invalid profile {requested:?}; valid choices: {}",
+            valid.join(", ")
+        ),
+        ProfileError::BackendUnavailable => "power-profiles-daemon is not available".to_string(),
+        ProfileError::BackendDenied => {
+            "Denied -- see docs/optional-setup.md for the udev-rule relax".to_string()
+        }
+        ProfileError::BackendFailed(msg) => msg.clone(),
+    }
+}
+
+fn battery_limit_error_message(e: &BatteryLimitError) -> String {
+    match e {
+        BatteryLimitError::Unavailable => {
+            "Driver not loaded -- see docs/optional-setup.md".to_string()
+        }
+        BatteryLimitError::Denied => {
+            "Denied -- needs root or a udev rule, see docs/optional-setup.md".to_string()
+        }
+        BatteryLimitError::Failed(msg) => msg.clone(),
+    }
+}
+
+/// An editable "pick one of N named profiles" row (M12) — `power_profile`
+/// and `acer_profile` both use this. Keeps the same subtitle-text display
+/// as every other row (the same `RowContent` convention `DashboardRow`
+/// uses, for every capability state) and layers a real `AdwComboRow`
+/// selector on top when a profile list is actually available: picking a
+/// different entry calls the provider's `set_profile(name)` off the main
+/// thread. A failed write is surfaced via an `AdwToast`; no manual revert
+/// is needed since the next poll tick (≤2s later) always re-syncs the
+/// selection to the real backend state regardless of whether the write
+/// succeeded.
+struct ProfileRow {
+    widget: adw::ComboRow,
+    /// Guards against the poll loop's own `set_model`/`set_selected` calls
+    /// (needed to keep the row in sync with real backend state) firing the
+    /// same `notify::selected` handler a real user click would — set just
+    /// around those calls, same `Cell<bool>` idiom `poll_in_flight` already
+    /// uses elsewhere in this file.
+    applying_from_poll: Rc<Cell<bool>>,
+    /// Only rebuild the `gtk4::StringList` model when the profile set
+    /// actually changes, so an unrelated poll tick doesn't reset it.
+    last_names: Rc<RefCell<Vec<String>>>,
+}
+
+impl ProfileRow {
+    fn new(
+        title: &str,
+        provider: Arc<dyn PowerProfileProvider>,
+        toasts: adw::ToastOverlay,
+    ) -> Self {
+        let widget = adw::ComboRow::builder().title(title).build();
+        let applying_from_poll = Rc::new(Cell::new(false));
+
+        let guard = applying_from_poll.clone();
+        widget.connect_selected_notify(move |row| {
+            if guard.get() {
+                return; // our own poll-driven update, not a real user click
+            }
+            let Some(name) = row
+                .selected_item()
+                .and_downcast::<gtk4::StringObject>()
+                .map(|s| s.string().to_string())
+            else {
+                return;
+            };
+            let provider = provider.clone();
+            let toasts = toasts.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let write_name = name.clone();
+                let result = gio::spawn_blocking(move || provider.set_profile(&write_name)).await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => toasts.add_toast(adw::Toast::new(&profile_error_message(&e))),
+                    Err(_) => {
+                        toasts.add_toast(adw::Toast::new("Couldn't set profile: internal error"))
+                    }
+                }
+            });
+        });
+
+        Self {
+            widget,
+            applying_from_poll,
+            last_names: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn apply(&self, content: &RowContent, options: &Option<(Vec<String>, String)>) {
+        self.applying_from_poll.set(true);
+        match options {
+            Some((names, current)) => {
+                let mut last_names = self.last_names.borrow_mut();
+                if *last_names != *names {
+                    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    self.widget.set_model(Some(&gtk4::StringList::new(&refs)));
+                    *last_names = names.clone();
+                }
+                if let Some(idx) = names.iter().position(|n| n == current) {
+                    self.widget.set_selected(idx as u32);
+                }
+                self.widget.set_sensitive(true);
+            }
+            None => {
+                // Nothing real to select from -- show the same state word
+                // the subtitle already carries, as the sole (disabled) item.
+                self.widget
+                    .set_model(Some(&gtk4::StringList::new(&[content.subtitle.as_str()])));
+                self.widget.set_selected(0);
+                self.last_names.borrow_mut().clear();
+                self.widget.set_sensitive(false);
+            }
+        }
+        self.applying_from_poll.set(false);
+
+        self.widget.set_subtitle(&content.subtitle);
+        if content.available {
+            self.widget.remove_css_class("dim-label");
+        } else {
+            self.widget.add_css_class("dim-label");
+        }
+    }
+}
+
+/// An editable on/off row (M12) — `battery_limit`'s `AdwSwitchRow`. Same
+/// poll-guard and revert-via-next-poll reasoning as `ProfileRow`.
+struct BatteryLimitRow {
+    widget: adw::SwitchRow,
+    applying_from_poll: Rc<Cell<bool>>,
+}
+
+impl BatteryLimitRow {
+    fn new(
+        title: &str,
+        provider: Arc<dyn BatteryLimitProvider>,
+        toasts: adw::ToastOverlay,
+    ) -> Self {
+        let widget = adw::SwitchRow::builder().title(title).build();
+        let applying_from_poll = Rc::new(Cell::new(false));
+
+        let guard = applying_from_poll.clone();
+        widget.connect_active_notify(move |row| {
+            if guard.get() {
+                return;
+            }
+            let enabled = row.is_active();
+            let provider = provider.clone();
+            let toasts = toasts.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let result = gio::spawn_blocking(move || provider.set_health_mode(enabled)).await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        toasts.add_toast(adw::Toast::new(&battery_limit_error_message(&e)))
+                    }
+                    Err(_) => toasts.add_toast(adw::Toast::new(
+                        "Couldn't change battery charge limit: internal error",
+                    )),
+                }
+            });
+        });
+
+        Self {
+            widget,
+            applying_from_poll,
+        }
+    }
+
+    fn apply(&self, content: &RowContent, value: Option<bool>) {
+        self.applying_from_poll.set(true);
+        if let Some(enabled) = value {
+            self.widget.set_active(enabled);
+        }
+        self.widget.set_sensitive(value.is_some());
+        self.applying_from_poll.set(false);
+
+        self.widget.set_subtitle(&content.subtitle);
+        if content.available {
+            self.widget.remove_css_class("dim-label");
+        } else {
+            self.widget.add_css_class("dim-label");
+        }
+    }
+}
+
 struct Dashboard {
     cpu_temperature: DashboardRow,
     cpu_temperature_sparkline: Sparkline,
@@ -298,9 +526,9 @@ struct Dashboard {
     ram_usage: DashboardRow,
     battery: DashboardRow,
     fan_rpm: DashboardRow,
-    power_profile: DashboardRow,
-    acer_profile: DashboardRow,
-    battery_limit: DashboardRow,
+    power_profile: ProfileRow,
+    acer_profile: ProfileRow,
+    battery_limit: BatteryLimitRow,
     battery_calibration: DashboardRow,
     power_draw: DashboardRow,
 }
@@ -320,9 +548,12 @@ impl Dashboard {
         self.ram_usage.update(&snapshot.ram_usage);
         self.battery.update(&snapshot.battery);
         self.fan_rpm.update(&snapshot.fan_rpm);
-        self.power_profile.update(&snapshot.power_profile);
-        self.acer_profile.update(&snapshot.acer_profile);
-        self.battery_limit.update(&snapshot.battery_limit);
+        self.power_profile
+            .apply(&snapshot.power_profile, &snapshot.power_profile_options);
+        self.acer_profile
+            .apply(&snapshot.acer_profile, &snapshot.acer_profile_options);
+        self.battery_limit
+            .apply(&snapshot.battery_limit, snapshot.battery_limit_value);
         self.battery_calibration
             .update(&snapshot.battery_calibration);
         self.power_draw.update(&snapshot.power_draw);
@@ -338,6 +569,13 @@ fn group(title: &str, rows: &[&adw::ActionRow]) -> adw::PreferencesGroup {
 }
 
 pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
+    // Shared across every write-failure toast, and across the poll loop's
+    // own reads below (M12: same instance either way, no separate build).
+    let toast_overlay = adw::ToastOverlay::new();
+    let profile_provider = build_profile_provider();
+    let acer_profile_provider = build_acer_profile_provider();
+    let battery_limit_provider = build_battery_limit_provider();
+
     let cpu_temperature = DashboardRow::new("CPU Temperature");
     let cpu_temperature_sparkline = Sparkline::new();
     cpu_temperature
@@ -352,9 +590,21 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let ram_usage = DashboardRow::new("RAM Usage");
     let battery = DashboardRow::new("Battery");
     let fan_rpm = DashboardRow::new("Fan RPM");
-    let power_profile = DashboardRow::new("Power Profile");
-    let acer_profile = DashboardRow::new("Acer Firmware Profile");
-    let battery_limit = DashboardRow::new("Battery Charge Limit");
+    let power_profile = ProfileRow::new(
+        "Power Profile",
+        profile_provider.clone(),
+        toast_overlay.clone(),
+    );
+    let acer_profile = ProfileRow::new(
+        "Acer Firmware Profile",
+        acer_profile_provider.clone(),
+        toast_overlay.clone(),
+    );
+    let battery_limit = BatteryLimitRow::new(
+        "Battery Charge Limit",
+        battery_limit_provider.clone(),
+        toast_overlay.clone(),
+    );
     let battery_calibration = DashboardRow::new("Battery Calibration Mode");
     let power_draw = DashboardRow::new("CPU Package Power");
 
@@ -381,14 +631,17 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         "Battery",
         &[
             &battery.widget,
-            &battery_limit.widget,
+            battery_limit.widget.upcast_ref::<adw::ActionRow>(),
             &battery_calibration.widget,
         ],
     );
     let fans_group = group("Fans", &[&fan_rpm.widget]);
     let power_group = group(
         "Power Profile",
-        &[&power_profile.widget, &acer_profile.widget],
+        &[
+            power_profile.widget.upcast_ref::<adw::ActionRow>(),
+            acer_profile.widget.upcast_ref::<adw::ActionRow>(),
+        ],
     );
 
     let page = adw::PreferencesPage::new();
@@ -399,10 +652,12 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     page.add(&fans_group);
     page.add(&power_group);
 
+    toast_overlay.set_child(Some(&page));
+
     let header_bar = adw::HeaderBar::new();
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&header_bar);
-    toolbar_view.set_content(Some(&page));
+    toolbar_view.set_content(Some(&toast_overlay));
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -433,10 +688,9 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
 
     // Built once, shared across every poll — see the module doc comment
     // for why a fresh provider per tick would break cpu_utilization.
+    // (profile_provider/acer_profile_provider/battery_limit_provider were
+    // already built above, shared with the M12 editable rows.)
     let sensors = build_sensor_provider();
-    let profile_provider = build_profile_provider();
-    let acer_profile_provider = build_acer_profile_provider();
-    let battery_limit_provider = build_battery_limit_provider();
     let battery_calibration_provider = build_battery_calibration_provider();
     let power_draw_provider = build_power_draw_provider();
 

@@ -177,6 +177,21 @@ Following a UI-research pass (web search for well-designed GTK4/libadwaita and l
 
 Only this one row was mocked up, per explicit scope — a template for extending the same `Sparkline` type to other numeric rows (iGPU/dGPU temp, CPU utilization, power draw) later if desired.
 
+## M12 — GUI: editable Power Profile / Acer Firmware Profile / Battery Charge Limit rows — done 2026-09-06
+
+Turned three read-only dashboard rows into real interactive controls — the user can now change power profile or toggle the battery charge limit from the GUI, no `nitroctl ... set` command needed.
+
+A research subagent (WebSearch/WebFetch against docs.rs, GNOME's own libadwaita docs, GTK's official docs) confirmed the exact gtk4-rs 0.11 / libadwaita-rs 0.9 API before any code was written — corrected two assumptions along the way: the write method is `PowerProfileProvider::set_profile(&str)`, not `set_active_profile` (that name is one layer down, on `PowerProfilesBackend`); and `list_profiles()` already exists and should populate the combo model live, not a hardcoded profile list.
+
+- **`AdwComboRow`** for `power_profile` and `acer_profile` (both use the same new `ProfileRow` type) — the idiomatic Adwaita "pick one of N named options" row, same one GNOME Settings itself uses. Model is a `gtk4::StringList` built from the provider's own `list_profiles()`, so it reflects whatever the real backend reports rather than an assumed fixed set.
+- **`AdwSwitchRow`** for `battery_limit` (new `BatteryLimitRow` type) — the standard boolean-toggle preferences row.
+- **Poll-feedback guard**: reused this file's existing `Cell<bool>` idiom (the same shape `poll_in_flight` already uses) rather than `glib::SignalHandlerId`/`block_signal` bookkeeping — set immediately before the poll loop's own `set_model`/`set_selected`/`set_active` calls, checked at the top of the `notify::selected`/`notify::active` handlers, so a poll-driven update never gets mistaken for a real user click.
+- **No manual revert-on-failure needed**: a failed write shows an `AdwToast` (a new shared `adw::ToastOverlay` wraps the page), and the next poll tick (≤2s later) always re-syncs the row to whatever the backend actually reports — simpler than threading a "last known good" value through the write path, and correct because the poll loop is already the single source of truth for every row.
+- `battery_calibration` was deliberately **not** touched — stays read-only, per M7's explicit safety design (a 12+ hour, no-abort-signal operation should not be one accidental switch-click away).
+- Writes run via the same `gio::spawn_blocking` + `glib::MainContext::spawn_local` pattern the poll loop already uses, never blocking the GTK main thread.
+- No `nitroctl-core`/`nitroctl-cli` changes — this is GUI-only, reusing existing provider traits/methods unchanged. 209/209 workspace tests unaffected, clippy/fmt clean.
+- Runtime-verified: launched the real binary, let it run 4+ poll ticks with the real `power-profiles-daemon` backend (genuinely `Supported`, so the combo model gets rebuilt and re-selected every tick) — no panics, no GTK-critical warnings, clean shutdown. `acer_profile`/`battery_limit`'s actual write paths need `predator_v4=1`/the out-of-tree driver loaded respectively (neither active on this machine right now) to exercise for real — a live click-through of all three rows was left to the user, since this session's compositor's non-standard Lua-based `hyprctl dispatch` layer blocked scripted window automation (same friction noted in M11).
+
 ## M5+ — remaining re-evaluation items
 
 - **Battery charge limit**: superseded by M6 above — the adoption decision this bullet used to flag as open is now resolved (adopt now, via fork). Kept here only as a pointer for anyone reading roadmap history.
