@@ -45,7 +45,7 @@ use nitroctl_core::command::RealCommandRunner;
 use nitroctl_core::dmi;
 use nitroctl_core::power_profile::{
     AcerPlatformProfileBackend, FailedBackend, PowerProfileProvider, PowerProfilesDaemon,
-    ProfileError, ZbusPowerProfilesBackend,
+    ProfileError, ProfileInfo, ZbusPowerProfilesBackend,
 };
 use nitroctl_core::sensor::{
     BatteryState, BatteryStatus, Celsius, GpuKind, Megahertz, MemoryUsage, Percent, Rpm,
@@ -399,10 +399,13 @@ struct Snapshot {
     ram_value: Option<(f64, f64, f64)>,
     battery_value: Option<(f64, String, Option<f64>)>,
     fan_rpm_values: Option<Vec<u32>>,
-    /// M12/M15/M17: `(all profile names, currently active name)` when both
-    /// the profile list and the current profile are available — `None`
-    /// means nothing real to populate the selector with.
-    power_profile_options: Option<(Vec<String>, String)>,
+    /// M12/M15/M17: `(all profiles with detail, currently active name)`
+    /// when both the profile list and the current profile are available —
+    /// `None` means nothing real to populate the selector with. Full
+    /// `ProfileInfo` (not just names) since issue #25: the picker grays out
+    /// a specific known-unsupported entry rather than treating the list as
+    /// all-or-nothing.
+    power_profile_options: Option<(Vec<ProfileInfo>, String)>,
     acer_profile_options: Option<(Vec<String>, String)>,
     acer_profile_available: bool,
     battery_limit_value: Option<bool>,
@@ -423,6 +426,26 @@ fn profile_options(provider: &dyn PowerProfileProvider) -> Option<(Vec<String>, 
         _ => return None,
     };
     Some((names, current))
+}
+
+/// Same pairing as `profile_options()`, but with each entry's full detail
+/// (`ProfileInfo.known_unsupported`, issue #25) instead of just its name --
+/// used for the main Power-tab picker so it can gray out a specific
+/// known-bad choice instead of the list being all-or-nothing.
+fn profile_options_detailed(
+    provider: &dyn PowerProfileProvider,
+) -> Option<(Vec<ProfileInfo>, String)> {
+    let details = match provider.list_profile_details() {
+        CapabilityState::Supported(details) => details,
+        _ => return None,
+    };
+    let current = match provider.current_profile() {
+        CapabilityState::Supported(status) | CapabilityState::HardwareDependent(status) => {
+            status.name
+        }
+        _ => return None,
+    };
+    Some((details, current))
 }
 
 fn battery_limit_value(state: &CapabilityState<bool>) -> Option<bool> {
@@ -456,7 +479,7 @@ fn take_snapshot(
         ram_value: ram_value(&sensors.ram_usage()),
         battery_value: battery_value(&sensors.battery()),
         fan_rpm_values: fan_rpm_values(&sensors.fan_rpm()),
-        power_profile_options: profile_options(profile),
+        power_profile_options: profile_options_detailed(profile),
         acer_profile_options: profile_options(acer_profile),
         acer_profile_available: !matches!(
             acer_profile_current,
@@ -480,6 +503,9 @@ fn profile_error_message(e: &ProfileError) -> String {
         ProfileError::InvalidProfile { requested, valid } => format!(
             "Invalid profile {requested:?}; valid choices: {}",
             valid.join(", ")
+        ),
+        ProfileError::KnownUnsupportedProfile { requested } => format!(
+            "{requested:?} is a known, permanent firmware/EC limitation on this hardware -- not a NitroControl bug. See docs/hardware.md's predator_v4 experiment for details."
         ),
         ProfileError::BackendUnavailable => "power-profiles-daemon is not available".to_string(),
         ProfileError::BackendDenied => {
@@ -659,7 +685,7 @@ impl BatteryLimitRow {
 /// `set_profile`/toast write path underneath).
 struct ProfilePills {
     container: gtk4::Box,
-    buttons: Rc<RefCell<Vec<(String, gtk4::ToggleButton)>>>,
+    buttons: Rc<RefCell<Vec<(String, bool, gtk4::ToggleButton)>>>,
     applying_from_poll: Rc<Cell<bool>>,
     provider: Arc<dyn PowerProfileProvider>,
     toasts: adw::ToastOverlay,
@@ -679,24 +705,40 @@ impl ProfilePills {
         }
     }
 
-    fn make_button(&self, name: &str) -> gtk4::ToggleButton {
+    fn make_button(&self, name: &str, known_unsupported: bool) -> gtk4::ToggleButton {
         let button = gtk4::ToggleButton::new();
         button.add_css_class("profile-card");
         button.add_css_class("flat");
 
         let title = gtk4::Label::new(Some(&profile_display_name(name)));
         title.set_halign(gtk4::Align::Start);
-        let subtitle_text = profile_subtitle(name);
+        let mut subtitle_text = profile_subtitle(name).to_string();
+        // Issue #25: this exact choice is confirmed in advance to fail on
+        // this hardware's firmware/EC -- disable it and say why, instead of
+        // letting it be clicked into a raw I/O-error toast.
+        if known_unsupported {
+            if !subtitle_text.is_empty() {
+                subtitle_text.push_str(" -- ");
+            }
+            subtitle_text.push_str("Not supported by this hardware's firmware");
+        }
         let content = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
         content.append(&title);
         if !subtitle_text.is_empty() {
-            let subtitle = gtk4::Label::new(Some(subtitle_text));
+            let subtitle = gtk4::Label::new(Some(&subtitle_text));
             subtitle.add_css_class("meta-label");
             subtitle.set_halign(gtk4::Align::Start);
             subtitle.set_wrap(true);
             content.append(&subtitle);
         }
         button.set_child(Some(&content));
+
+        if known_unsupported {
+            button.set_sensitive(false);
+            button.set_tooltip_text(Some(
+                "This profile is a known, permanent firmware/EC limitation on this hardware -- not a NitroControl bug. See docs/hardware.md's predator_v4 experiment for details.",
+            ));
+        }
 
         let guard = self.applying_from_poll.clone();
         let provider = self.provider.clone();
@@ -725,10 +767,10 @@ impl ProfilePills {
         button
     }
 
-    fn apply(&self, options: &Option<(Vec<String>, String)>) {
+    fn apply(&self, options: &Option<(Vec<ProfileInfo>, String)>) {
         self.applying_from_poll.set(true);
 
-        let Some((names, current)) = options else {
+        let Some((infos, current)) = options else {
             self.container.set_visible(false);
             self.applying_from_poll.set(false);
             return;
@@ -736,26 +778,33 @@ impl ProfilePills {
         self.container.set_visible(true);
 
         let mut buttons = self.buttons.borrow_mut();
-        let current_names: Vec<String> = buttons.iter().map(|(n, _)| n.clone()).collect();
-        if current_names != *names {
+        let current_shape: Vec<(String, bool)> = buttons
+            .iter()
+            .map(|(n, u, _)| (n.clone(), *u))
+            .collect();
+        let wanted_shape: Vec<(String, bool)> = infos
+            .iter()
+            .map(|info| (info.name.clone(), info.known_unsupported))
+            .collect();
+        if current_shape != wanted_shape {
             while let Some(child) = self.container.first_child() {
                 self.container.remove(&child);
             }
             let mut new_buttons = Vec::new();
             let mut first_button: Option<gtk4::ToggleButton> = None;
-            for name in names {
-                let button = self.make_button(name);
+            for info in infos {
+                let button = self.make_button(&info.name, info.known_unsupported);
                 if let Some(first) = &first_button {
                     button.set_group(Some(first));
                 } else {
                     first_button = Some(button.clone());
                 }
                 self.container.append(&button);
-                new_buttons.push((name.clone(), button));
+                new_buttons.push((info.name.clone(), info.known_unsupported, button));
             }
             *buttons = new_buttons;
         }
-        for (name, button) in buttons.iter() {
+        for (name, _, button) in buttons.iter() {
             if name == current {
                 button.set_active(true);
             }
@@ -1806,5 +1855,81 @@ mod tests {
     #[test]
     fn profile_subtitle_unknown_name_is_empty_not_guessed() {
         assert_eq!(profile_subtitle("turbo-boost-9000"), "");
+    }
+
+    // ---- profile_options_detailed ----
+
+    struct FakeProfileProvider {
+        details: CapabilityState<Vec<ProfileInfo>>,
+        current: CapabilityState<nitroctl_core::power_profile::ProfileStatus>,
+    }
+
+    impl PowerProfileProvider for FakeProfileProvider {
+        fn list_profiles(&self) -> CapabilityState<Vec<String>> {
+            unimplemented!("not used by profile_options_detailed")
+        }
+        fn list_profile_details(&self) -> CapabilityState<Vec<ProfileInfo>> {
+            self.details.clone()
+        }
+        fn current_profile(&self) -> CapabilityState<nitroctl_core::power_profile::ProfileStatus> {
+            self.current.clone()
+        }
+        fn set_profile(&self, _profile: &str) -> Result<(), ProfileError> {
+            unimplemented!("not used by profile_options_detailed")
+        }
+    }
+
+    fn two_details() -> Vec<ProfileInfo> {
+        vec![
+            ProfileInfo {
+                name: "balanced".to_string(),
+                is_placeholder: true,
+                known_unsupported: false,
+            },
+            ProfileInfo {
+                name: "performance".to_string(),
+                is_placeholder: false,
+                known_unsupported: true,
+            },
+        ]
+    }
+
+    #[test]
+    fn profile_options_detailed_pairs_full_info_with_the_current_name() {
+        let provider = FakeProfileProvider {
+            details: CapabilityState::Supported(two_details()),
+            current: CapabilityState::Supported(nitroctl_core::power_profile::ProfileStatus {
+                name: "balanced".to_string(),
+                hardware_backed: false,
+            }),
+        };
+
+        let result = profile_options_detailed(&provider);
+
+        assert_eq!(result, Some((two_details(), "balanced".to_string())));
+    }
+
+    #[test]
+    fn profile_options_detailed_none_when_list_unsupported() {
+        let provider = FakeProfileProvider {
+            details: CapabilityState::Unsupported,
+            current: CapabilityState::Unsupported,
+        };
+
+        assert_eq!(profile_options_detailed(&provider), None);
+    }
+
+    #[test]
+    fn profile_error_message_known_unsupported_names_it_a_hardware_limitation() {
+        // Issue #25: distinct from a raw BackendFailed errno string.
+        let msg = profile_error_message(&ProfileError::KnownUnsupportedProfile {
+            requested: "performance".to_string(),
+        });
+
+        assert!(msg.contains("performance"), "{msg}");
+        assert!(
+            !msg.to_lowercase().contains("input/output error"),
+            "should not read like a raw errno: {msg}"
+        );
     }
 }

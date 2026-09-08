@@ -15,7 +15,20 @@ use crate::sysfs::SysfsReader;
 pub struct ProfileInfo {
     pub name: String,
     pub is_placeholder: bool,
+    /// `true` when this exact name is known in advance to fail if written,
+    /// on hardware backed by a real ACPI `platform_profile` driver -- not a
+    /// transient error, a documented permanent firmware/EC limitation (see
+    /// `KNOWN_UNSUPPORTED_PROFILE`). Distinct from `is_placeholder`: a
+    /// placeholder profile *succeeds* as a no-op; this one *fails* outright.
+    pub known_unsupported: bool,
 }
+
+/// The one ACPI `platform_profile` value this project has confirmed (M5,
+/// docs/hardware.md's `predator_v4=1` experiment) the EC firmware rejects
+/// with `-EIO` on this hardware and three sibling Nitro/Predator models --
+/// a permanent hardware ceiling, not a transient bug. Shared so every
+/// backend keys off the same documented name instead of separate literals.
+const KNOWN_UNSUPPORTED_PROFILE: &str = "performance";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendError {
@@ -65,6 +78,13 @@ pub enum ProfileError {
         requested: String,
         valid: Vec<String>,
     },
+    /// The name is a real, listed choice, but writing it is known in
+    /// advance to fail -- a documented permanent firmware/EC limitation
+    /// (see `KNOWN_UNSUPPORTED_PROFILE`), not a NitroControl bug. Rejected
+    /// before any write is attempted, same as `InvalidProfile`.
+    KnownUnsupportedProfile {
+        requested: String,
+    },
     BackendUnavailable,
     BackendDenied,
     BackendFailed(String),
@@ -75,6 +95,11 @@ pub enum ProfileError {
 /// reconnecting to D-Bus every tick.
 pub trait PowerProfileProvider: Send + Sync {
     fn list_profiles(&self) -> CapabilityState<Vec<String>>;
+    /// Same as `list_profiles()`, but with each entry's full detail (e.g.
+    /// `known_unsupported`, issue #25) instead of just its name -- for
+    /// callers (the GUI) that need to gray out a specific known-bad choice
+    /// rather than treat the whole list as all-or-nothing.
+    fn list_profile_details(&self) -> CapabilityState<Vec<ProfileInfo>>;
     fn current_profile(&self) -> CapabilityState<ProfileStatus>;
     fn set_profile(&self, profile: &str) -> Result<(), ProfileError>;
 }
@@ -99,10 +124,22 @@ impl<B: PowerProfilesBackend> PowerProfilesDaemon<B> {
 
 impl<B: PowerProfilesBackend> PowerProfileProvider for PowerProfilesDaemon<B> {
     fn list_profiles(&self) -> CapabilityState<Vec<String>> {
-        match self.backend.profiles() {
-            Ok(profiles) => {
-                CapabilityState::Supported(profiles.into_iter().map(|p| p.name).collect())
+        match self.list_profile_details() {
+            CapabilityState::Supported(v) => {
+                CapabilityState::Supported(v.into_iter().map(|p| p.name).collect())
             }
+            CapabilityState::HardwareDependent(v) => {
+                CapabilityState::HardwareDependent(v.into_iter().map(|p| p.name).collect())
+            }
+            CapabilityState::Unsupported => CapabilityState::Unsupported,
+            CapabilityState::Unknown => CapabilityState::Unknown,
+            CapabilityState::RequiresPrivilege => CapabilityState::RequiresPrivilege,
+        }
+    }
+
+    fn list_profile_details(&self) -> CapabilityState<Vec<ProfileInfo>> {
+        match self.backend.profiles() {
+            Ok(profiles) => CapabilityState::Supported(profiles),
             Err(e) => map_backend_error(e),
         }
     }
@@ -138,11 +175,17 @@ impl<B: PowerProfilesBackend> PowerProfileProvider for PowerProfilesDaemon<B> {
             BackendError::Denied => ProfileError::BackendDenied,
             BackendError::Other(msg) => ProfileError::BackendFailed(msg),
         })?;
+        let matched = profiles.iter().find(|p| p.name == profile).cloned();
         let valid: Vec<String> = profiles.into_iter().map(|p| p.name).collect();
-        if !valid.iter().any(|name| name == profile) {
+        let Some(info) = matched else {
             return Err(ProfileError::InvalidProfile {
                 requested: profile.to_string(),
                 valid,
+            });
+        };
+        if info.known_unsupported {
+            return Err(ProfileError::KnownUnsupportedProfile {
+                requested: profile.to_string(),
             });
         }
 
@@ -248,31 +291,38 @@ fn map_zbus_error(err: zbus::Error) -> BackendError {
     }
 }
 
+/// Parses one entry of PPD's `Profiles` D-Bus property into a `ProfileInfo`.
+/// A free function (not a method) so it's unit-testable without a live
+/// D-Bus connection -- see the `zbus_profile_parsing` tests.
+fn profile_info_from_dict(
+    dict: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+) -> Result<ProfileInfo, BackendError> {
+    let name = dict
+        .get("Profile")
+        .and_then(value_as_string)
+        .ok_or_else(|| BackendError::Other("Profiles entry missing 'Profile' name".to_string()))?;
+    let platform_driver = dict.get("PlatformDriver").and_then(value_as_string);
+    let is_placeholder = platform_driver.as_deref() == Some("placeholder");
+    // Only known-unsupported when PPD has adopted the real ACPI
+    // platform_profile driver for this name -- see KNOWN_UNSUPPORTED_PROFILE.
+    // On this machine's default state (docs/hardware.md line 62) `performance`
+    // is CpuDriver `amd_pstate`-backed instead and genuinely works.
+    let known_unsupported =
+        name == KNOWN_UNSUPPORTED_PROFILE && platform_driver.as_deref() == Some("platform_profile");
+    Ok(ProfileInfo {
+        name,
+        is_placeholder,
+        known_unsupported,
+    })
+}
+
 impl PowerProfilesBackend for ZbusPowerProfilesBackend {
     fn profiles(&self) -> Result<Vec<ProfileInfo>, BackendError> {
         let proxy = self.proxy()?;
         let raw: Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> =
             proxy.get_property("Profiles").map_err(map_zbus_error)?;
 
-        raw.into_iter()
-            .map(|dict| {
-                let name = dict
-                    .get("Profile")
-                    .and_then(value_as_string)
-                    .ok_or_else(|| {
-                        BackendError::Other("Profiles entry missing 'Profile' name".to_string())
-                    })?;
-                let is_placeholder = dict
-                    .get("PlatformDriver")
-                    .and_then(value_as_string)
-                    .map(|driver| driver == "placeholder")
-                    .unwrap_or(false);
-                Ok(ProfileInfo {
-                    name,
-                    is_placeholder,
-                })
-            })
-            .collect()
+        raw.iter().map(profile_info_from_dict).collect()
     }
 
     fn active_profile_name(&self) -> Result<String, BackendError> {
@@ -369,6 +419,11 @@ impl<R: SysfsReader> PowerProfilesBackend for AcerPlatformProfileBackend<R> {
                 // in ProfileStatus) is only known once set_active_profile()
                 // is actually tried (docs/hardware.md: 4 of 5 do, one EIOs).
                 is_placeholder: false,
+                // This backend only exists when the real ACPI platform_profile
+                // node is present, so it's always the "real ACPI backing"
+                // case -- no driver-string check needed, unlike the PPD
+                // backend. See KNOWN_UNSUPPORTED_PROFILE.
+                known_unsupported: name == KNOWN_UNSUPPORTED_PROFILE,
             })
             .collect())
     }
@@ -457,19 +512,73 @@ mod tests {
     use super::*;
     use mock::MockPowerProfilesBackend;
 
+    mod zbus_profile_parsing {
+        use super::*;
+        use std::collections::HashMap;
+        use zbus::zvariant::{OwnedValue, Value};
+
+        fn dict(profile: &str, platform_driver: Option<&str>) -> HashMap<String, OwnedValue> {
+            let mut d = HashMap::new();
+            d.insert(
+                "Profile".to_string(),
+                OwnedValue::try_from(Value::new(profile)).unwrap(),
+            );
+            if let Some(driver) = platform_driver {
+                d.insert(
+                    "PlatformDriver".to_string(),
+                    OwnedValue::try_from(Value::new(driver)).unwrap(),
+                );
+            }
+            d
+        }
+
+        #[test]
+        fn performance_backed_by_real_platform_profile_driver_is_known_unsupported() {
+            // Once power-profiles-daemon adopts the real ACPI platform_profile
+            // driver for `performance` (not the CpuDriver-only amd_pstate
+            // path), it's the exact write M5 confirmed EIOs -- see
+            // KNOWN_UNSUPPORTED_PROFILE's doc comment.
+            let info = profile_info_from_dict(&dict("performance", Some("platform_profile")))
+                .unwrap();
+
+            assert!(info.known_unsupported);
+        }
+
+        #[test]
+        fn performance_backed_by_cpu_driver_is_not_known_unsupported() {
+            // docs/hardware.md line 62: the reference machine's default
+            // state -- performance backed only by amd_pstate, genuinely
+            // works, no real ACPI platform_profile involved.
+            let info = profile_info_from_dict(&dict("performance", Some("amd_pstate"))).unwrap();
+
+            assert!(!info.known_unsupported);
+        }
+
+        #[test]
+        fn other_profile_names_are_never_known_unsupported() {
+            let info = profile_info_from_dict(&dict("balanced", Some("platform_profile")))
+                .unwrap();
+
+            assert!(!info.known_unsupported);
+        }
+    }
+
     fn three_profiles() -> Vec<ProfileInfo> {
         vec![
             ProfileInfo {
                 name: "power-saver".to_string(),
                 is_placeholder: true,
+                known_unsupported: false,
             },
             ProfileInfo {
                 name: "balanced".to_string(),
                 is_placeholder: true,
+                known_unsupported: false,
             },
             ProfileInfo {
                 name: "performance".to_string(),
                 is_placeholder: false,
+                known_unsupported: false,
             },
         ]
     }
@@ -490,6 +599,21 @@ mod tests {
                 "balanced".to_string(),
                 "performance".to_string(),
             ])
+        );
+    }
+
+    #[test]
+    fn list_profile_details_returns_full_profile_info_in_order() {
+        // The GUI needs known_unsupported per entry (issue #25), not just
+        // names -- list_profiles() alone can't carry that.
+        let provider = PowerProfilesDaemon::new(MockPowerProfilesBackend::new(
+            three_profiles(),
+            "performance",
+        ));
+
+        assert_eq!(
+            provider.list_profile_details(),
+            CapabilityState::Supported(three_profiles())
         );
     }
 
@@ -641,6 +765,61 @@ mod tests {
     }
 
     #[test]
+    fn set_profile_rejects_a_known_unsupported_profile_per_issue_25() {
+        let backend = MockPowerProfilesBackend::new(
+            vec![
+                ProfileInfo {
+                    name: "balanced".to_string(),
+                    is_placeholder: true,
+                    known_unsupported: false,
+                },
+                ProfileInfo {
+                    name: "performance".to_string(),
+                    is_placeholder: false,
+                    known_unsupported: true,
+                },
+            ],
+            "balanced",
+        );
+        let provider = PowerProfilesDaemon::new(backend);
+
+        let result = provider.set_profile("performance");
+
+        assert_eq!(
+            result,
+            Err(ProfileError::KnownUnsupportedProfile {
+                requested: "performance".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn set_profile_does_not_call_the_backend_for_a_known_unsupported_profile() {
+        // SAFE-002/SAFE-003, same as an invalid name: a write already known
+        // to fail is rejected before it's attempted, not attempted anyway.
+        let backend = std::sync::Arc::new(MockPowerProfilesBackend::new(
+            vec![
+                ProfileInfo {
+                    name: "balanced".to_string(),
+                    is_placeholder: true,
+                    known_unsupported: false,
+                },
+                ProfileInfo {
+                    name: "performance".to_string(),
+                    is_placeholder: false,
+                    known_unsupported: true,
+                },
+            ],
+            "balanced",
+        ));
+        let provider = PowerProfilesDaemon::new(backend.clone());
+
+        let _ = provider.set_profile("performance");
+
+        assert_eq!(backend.last_set_call(), None);
+    }
+
+    #[test]
     fn set_profile_reports_backend_failure_without_assuming_success() {
         let backend = MockPowerProfilesBackend::new(three_profiles(), "performance");
         backend.fail_set_with(BackendError::Other("dbus timeout".to_string()));
@@ -694,23 +873,31 @@ mod tests {
                 vec![
                     ProfileInfo {
                         name: "low-power".to_string(),
-                        is_placeholder: false
+                        is_placeholder: false,
+                        known_unsupported: false,
                     },
                     ProfileInfo {
                         name: "quiet".to_string(),
-                        is_placeholder: false
+                        is_placeholder: false,
+                        known_unsupported: false,
                     },
                     ProfileInfo {
                         name: "balanced".to_string(),
-                        is_placeholder: false
+                        is_placeholder: false,
+                        known_unsupported: false,
                     },
                     ProfileInfo {
                         name: "balanced-performance".to_string(),
-                        is_placeholder: false
+                        is_placeholder: false,
+                        known_unsupported: false,
                     },
+                    // The one confirmed-EIO value (M5, KNOWN_UNSUPPORTED_PROFILE) --
+                    // this backend's mere existence implies real ACPI backing,
+                    // so it's known_unsupported unconditionally.
                     ProfileInfo {
                         name: "performance".to_string(),
-                        is_placeholder: false
+                        is_placeholder: false,
+                        known_unsupported: true,
                     },
                 ]
             );
@@ -838,13 +1025,21 @@ mod tests {
         }
 
         #[test]
-        fn through_power_profiles_daemon_performance_write_failure_reported_not_assumed_success() {
+        fn through_power_profiles_daemon_performance_rejected_known_unsupported_before_writing_issue_25(
+        ) {
+            // Supersedes the old "write is attempted, EIO reported" test:
+            // per issue #25, this exact write is now known in advance to
+            // fail (M5, KNOWN_UNSUPPORTED_PROFILE), so it's rejected
+            // client-side and never reaches the sysfs write at all -- no
+            // more raw `Input/output error (os error 5)` surfaced to the
+            // user for this specific, well-understood case.
             let sysfs = MockSysfsReader::new();
             sysfs.set_content(
                 CHOICES_PATH,
                 "low-power quiet balanced balanced-performance performance\n",
             );
             sysfs.set_content(PROFILE_PATH, "balanced\n");
+            // Still armed with a write failure to prove it's never reached.
             sysfs.set_write_failure(PROFILE_PATH, "Input/output error (os error 5)");
             let provider = PowerProfilesDaemon::new(AcerPlatformProfileBackend::new(sysfs));
 
@@ -852,12 +1047,12 @@ mod tests {
 
             assert_eq!(
                 result,
-                Err(ProfileError::BackendFailed(
-                    "Input/output error (os error 5)".to_string()
-                ))
+                Err(ProfileError::KnownUnsupportedProfile {
+                    requested: "performance".to_string(),
+                })
             );
-            // SAFE-004: a failed write must not be reported/assumed as a
-            // profile change -- state stays what it was before the attempt.
+            // State is unchanged -- confirms the write was never attempted,
+            // not just that its failure was reported (SAFE-002/003).
             assert_eq!(
                 provider.current_profile(),
                 CapabilityState::Supported(ProfileStatus {
