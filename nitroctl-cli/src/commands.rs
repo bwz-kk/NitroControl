@@ -357,6 +357,12 @@ pub fn run_profile_set(provider: &dyn PowerProfileProvider, name: &str) -> Comma
             ),
             exit_code: 2,
         },
+        Err(ProfileError::KnownUnsupportedProfile { requested }) => CommandOutput {
+            text: format!(
+                "{requested:?} is a known, permanent firmware/EC limitation on this hardware -- not a NitroControl bug. See docs/hardware.md's predator_v4 experiment for details."
+            ),
+            exit_code: 2,
+        },
         Err(ProfileError::BackendUnavailable) => CommandOutput {
             text: "power-profiles-daemon is not available".to_string(),
             exit_code: 3,
@@ -408,6 +414,12 @@ pub fn run_acer_profile_set(provider: &dyn PowerProfileProvider, name: &str) -> 
             text: format!(
                 "Invalid profile {requested:?}; valid choices: {}",
                 valid.join(", ")
+            ),
+            exit_code: 2,
+        },
+        Err(ProfileError::KnownUnsupportedProfile { requested }) => CommandOutput {
+            text: format!(
+                "{requested:?} is a known, permanent firmware/EC limitation on this hardware -- not a NitroControl bug. See docs/hardware.md's predator_v4 experiment for details."
             ),
             exit_code: 2,
         },
@@ -546,6 +558,7 @@ pub fn run_battery_calibrate_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nitroctl_core::power_profile::ProfileInfo;
     use nitroctl_core::capability::CapabilityState;
     use nitroctl_core::sensor::{BatteryState, BatteryStatus, Celsius, Megahertz, Percent};
 
@@ -703,6 +716,12 @@ mod tests {
     impl PowerProfileProvider for FakePowerProfileProvider {
         fn list_profiles(&self) -> CapabilityState<Vec<String>> {
             self.list_profiles.clone()
+        }
+        fn list_profile_details(&self) -> CapabilityState<Vec<ProfileInfo>> {
+            // No existing CLI test exercises the detailed listing (that's
+            // the GUI's concern) -- a fixed Unsupported keeps this fake
+            // simple until/unless a CLI test actually needs it.
+            CapabilityState::Unsupported
         }
         fn current_profile(&self) -> CapabilityState<ProfileStatus> {
             self.current_profile.clone()
@@ -1102,6 +1121,29 @@ mod tests {
     }
 
     #[test]
+    fn profile_set_known_unsupported_names_it_a_hardware_limitation_and_exits_2() {
+        // Issue #25: "performance" is a real, listed choice that's known in
+        // advance to EIO on this hardware -- rejected client-side, not
+        // reported as a raw backend failure (exit 3).
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::KnownUnsupportedProfile {
+                requested: "performance".to_string(),
+            }),
+            ..Default::default()
+        };
+
+        let out = run_profile_set(&provider, "performance");
+
+        assert!(out.text.contains("performance"), "{}", out.text);
+        assert!(
+            !out.text.to_lowercase().contains("input/output error"),
+            "should not surface a raw errno for a known limitation: {}",
+            out.text
+        );
+        assert_eq!(out.exit_code, 2);
+    }
+
+    #[test]
     fn profile_set_backend_failure_exits_3_per_safe_004() {
         // SAFE-004: a failed write is reported, never assumed to have
         // succeeded — exit code 3 per cli.md's "underlying interface call
@@ -1221,6 +1263,26 @@ mod tests {
 
         assert!(out.text.contains("turbo-nitro-mode"), "{}", out.text);
         assert!(out.text.contains("balanced, performance"), "{}", out.text);
+        assert_eq!(out.exit_code, 2);
+    }
+
+    #[test]
+    fn acer_profile_set_known_unsupported_names_it_a_hardware_limitation_and_exits_2() {
+        let provider = FakePowerProfileProvider {
+            set_result: Err(ProfileError::KnownUnsupportedProfile {
+                requested: "performance".to_string(),
+            }),
+            ..Default::default()
+        };
+
+        let out = run_acer_profile_set(&provider, "performance");
+
+        assert!(out.text.contains("performance"), "{}", out.text);
+        assert!(
+            !out.text.to_lowercase().contains("input/output error"),
+            "should not surface a raw errno for a known limitation: {}",
+            out.text
+        );
         assert_eq!(out.exit_code, 2);
     }
 
